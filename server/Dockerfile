@@ -1,4 +1,4 @@
-FROM node:22-slim
+FROM node:24-slim
 
 # Docker CLI only (client) — the daemon socket is mounted from the host.
 # The control layer uses it to spawn/destroy sandbox containers.

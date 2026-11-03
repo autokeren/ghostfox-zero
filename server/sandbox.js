@@ -1,95 +1,81 @@
-// server/sandbox.js — per-task Docker container lifecycle manager
-// Containment-first: one container per task, hard resource limits,
-// plain-text steps in, screenshots out, container destroyed afterwards.
+// server/sandbox.js — per-task Ghostfox engine container lifecycle manager
+// Containment-first: one disposable container per task running the official
+// Ghostfox image (Firefox engine + Rust MCP runtime). The control layer talks
+// MCP over stdio; screenshots flow out through the mounted recordings dir.
 
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GhostfoxClient } from './mcp-client.js';
 
-const IMAGE = process.env.SANDBOX_IMAGE || 'ghostfox-sandbox';
-const MEMORY = process.env.SANDBOX_MEMORY || '512m';
-const CPUS = process.env.SANDBOX_CPUS || '0.5';
-const TIMEOUT_MS = parseInt(process.env.SANDBOX_TIMEOUT_MS || '120000', 10);
+const IMAGE = process.env.GHOSTFOX_IMAGE || 'ghcr.io/autokeren/ghostfox:latest';
+const MEMORY = process.env.SANDBOX_MEMORY || '1g';
+const CPUS = process.env.SANDBOX_CPUS || '1.0';
+const TIMEOUT_MS = parseInt(process.env.SANDBOX_TIMEOUT_MS || '300000', 10);
 
 /**
- * Run a list of browser steps inside a fresh, disposable Docker container.
+ * Spawn a disposable Ghostfox engine container and return a live MCP client
+ * wired to it, plus the host dir receiving session artifacts (screenshots).
  *
- * Containment guarantees:
- *  - `--rm`            container is destroyed immediately after the run
- *  - `--memory/--cpus` hard resource caps per task
- *  - no host volumes   nothing from the control layer is mounted inside
- *  - `--tmpfs`         the sandbox filesystem is in-memory and vanishes
- *  - steps arrive as plain JSON on stdin — no credentials cross the boundary
- *
- * @param {Array} steps  e.g. [{action:'goto',url:'https://example.com'},
- *                             {action:'click',selector:'#submit'},
- *                             {action:'type',selector:'#name',text:'Fox'},
- *                             {action:'screenshot'}]
- * @returns {Promise<{logs:string[], screenshots:string[], ok:boolean, error?:string}>}
+ * Containment contract:
+ *  - `--rm`                  container destroyed on close
+ *  - `--memory/--cpus`       hard resource caps
+ *  - `--cap-drop ALL`        no Linux capabilities
+ *  - `--pids-limit`          process count cap
+ *  - `no-new-privileges`     no privilege escalation inside
+ *  - only artifact dir mounted; the MCP stream carries plain-text commands
  */
-export function runInSandbox(steps) {
-  return new Promise(async (resolve) => {
-    const workdir = await mkdtemp(join(tmpdir(), 'gf0-'));
-    const shotsDir = join(workdir, 'shots');
+export async function startGhostfoxSandbox() {
+  const artifacts = await mkdtemp(join(tmpdir(), 'gf0-'));
 
-    // docker run flags encode the containment contract
-    const args = [
-      'run', '--rm',
-      '--name', `gf0-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      '--memory', MEMORY,
-      '--cpus', CPUS,
-      '--pids-limit', '256',
-      '--security-opt', 'no-new-privileges',
-      '--cap-drop', 'ALL',
-      '--network', 'bridge',
-      '-v', `${shotsDir}:/shots`,
-      '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
-      IMAGE,
-      'node', '/app/runner.js',
-    ];
+  const extraArgs = [
+    '--rm',
+    '--memory', MEMORY,
+    '--cpus', CPUS,
+    '--pids-limit', '400',
+    '--security-opt', 'no-new-privileges',
+    '--cap-drop', 'ALL',
+    '--network', 'bridge',
+    '-v', `${artifacts}:/root/.ghostfox`,
+  ];
 
-    const logs = [];
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; proc.kill('SIGKILL'); }, TIMEOUT_MS);
+  const client = new GhostfoxClient([]);
+  client.start(IMAGE, extraArgs);
 
-    const proc = spawn('docker', args);
-    proc.stdin.write(JSON.stringify(steps));
-    proc.stdin.end();
+  const killTimer = setTimeout(() => {
+    client.emit('log', 'sandbox hard timeout reached — killing container\n');
+    client.stop();
+  }, TIMEOUT_MS);
+  client.once('close', () => clearTimeout(killTimer));
 
-    const collect = (stream, out) => {
-      stream.on('data', (d) => {
-        const text = d.toString();
-        logs.push(text);
-        out && out(text);
-      });
-    };
-    collect(proc.stdout);
-    collect(proc.stderr);
+  await client.initialize();
 
-    proc.on('close', async (code) => {
-      clearTimeout(timer);
-      try {
-        // Pull screenshots out of the shared shots dir (sandbox → control only)
-        const { readdirSync } = await import('node:fs');
-        const screenshots = [];
-        let names = [];
-        try { names = readdirSync(shotsDir).sort(); } catch {}
-        for (const name of names) {
-          const buf = await readFile(join(shotsDir, name));
-          screenshots.push(buf.toString('base64'));
+  return {
+    client,
+    artifacts,
+    async screenshots() {
+      const shots = [];
+      const walk = async (dir) => {
+        let entries = [];
+        try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+          const p = join(dir, e.name);
+          if (e.isDirectory()) await walk(p);
+          else if (e.name.endsWith('.png')) {
+            shots.push({ path: p, b64: (await readFile(p)).toString('base64') });
+          }
         }
-        await rm(workdir, { recursive: true, force: true });
-        resolve({
-          ok: code === 0 && !timedOut,
-          error: timedOut ? `Sandbox exceeded hard timeout (${TIMEOUT_MS}ms) and was killed.` :
-                 code !== 0 ? `Sandbox exited with code ${code}.` : undefined,
-          logs,
-          screenshots,
-        });
-      } catch (e) {
-        resolve({ ok: false, error: `Failed to collect sandbox artifacts: ${e.message}`, logs, screenshots: [] });
-      }
-    });
-  });
+      };
+      await walk(artifacts);
+      return shots;
+    },
+    async destroy() {
+      clearTimeout(killTimer);
+      client.stop();
+      await new Promise((r) => setTimeout(r, 1500)); // let --rm finish
+      await rm(artifacts, { recursive: true, force: true });
+    },
+  };
 }
+
+export { MEMORY, CPUS, IMAGE, TIMEOUT_MS };

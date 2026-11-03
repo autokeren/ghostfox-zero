@@ -1,10 +1,12 @@
 # 🦊 Ghostfox Zero
 
-**A sandboxed browser agent with zero blast radius.**
+**A sandboxed browser agent with zero blast radius — powered by the Ghostfox engine.**
 
-Ghostfox Zero takes a natural-language goal, plans the browser steps with an LLM, dispatches them to an isolated Docker container running Playwright, verifies every step with a vision model, and requires human approval before any final action — every action stays contained. An agent that only chats is a demo; **an agent that executes safely is a product.**
+Ghostfox Zero takes a natural-language goal and pursues it with a **true agentic loop**: the reasoning model (Vultr Serverless Inference) sees the live page through Ghostfox's semantic accessibility layer, decides one action at a time, executes it inside a disposable Ghostfox engine container, verifies every step with a vision model, and requires **human approval** before any action that commits data.
 
-> Entry for the **Vultr: Agent Rush Hackathon** — Challenge 1: *Blast Radius Zero* (Pattern B: Sandboxed browser use).
+Headless Chrome agents eat Cloudflare 403s on ~20% of the web. Ghostfox Zero runs **Ghostfox** — a fingerprint-coherent Firefox engine with C++-level anti-detect and a Rust MCP runtime — so the agent goes where other agents get blocked.
+
+> Entry for the **Vultr: Agent Rush Hackathon** — Challenge 1: *Blast Radius Zero*.
 
 ---
 
@@ -14,51 +16,64 @@ Ghostfox Zero takes a natural-language goal, plans the browser steps with an LLM
 User goal
    │
    ▼
-┌──────────────────────────────────────────────────────┐
-│  CONTROL LAYER (Vultr VM — Node.js/Express)          │
-│                                                      │
-│  1. PLAN      → LLM turns the goal into steps       │
-│  2. DISPATCH  → steps are sent to the sandbox       │
-│  3. VERIFY    → vision model checks the screenshot   │
-│  4. APPROVE   → human gate before final actions     │
-│                                                      │
-│  LLM + vision = Vultr Serverless Inference           │
-└──────────────┬───────────────────────────────────────┘
-               │ plain-text steps only (no secrets ever enter)
+┌─────────────────────────────────────────────────────────────┐
+│  CONTROL LAYER (Vultr VM — Node.js/Express)                 │
+│                                                             │
+│   ┌────────────── AGENTIC LOOP ──────────────┐              │
+│   │  1. READ   page_a11y (semantic refs)     │              │
+│   │  2. THINK  LLM decides ONE next action   │ ← Vultr     │
+│   │  3. ACT    click/type/press via MCP      │   Serverless │
+│   │  4. LOOK   screenshot → vision verify    │   Inference  │
+│   │  5. GATE   human approval on final acts   │              │
+│   └───────────────────────────────────────────┘              │
+│                                                             │
+│   MCP over stdio (docker run -i)                            │
+└──────────────┬──────────────────────────────────────────────┘
+               │ plain-text MCP commands only (no secrets cross)
                ▼
-┌──────────────────────────────────────────────────────┐
-│  SANDBOX (Docker container — one per task)           │
-│                                                      │
-│  Playwright + headless Chromium                      │
-│  · memory capped  · CPU capped  · hard timeout      │
-│  · container destroyed (--rm) after every task       │
-│  · zero access to host runtime or credentials        │
-└──────────────┬───────────────────────────────────────┘
-               │ screenshots only
-               ▼
-      verified results + artifacts
+┌─────────────────────────────────────────────────────────────┐
+│  SANDBOX — official Ghostfox container (one per task)       │
+│                                                             │
+│  ghcr.io/autokeren/ghostfox                                 │
+│  Firefox 152 → Camoufox anti-detect → Ghostfox engine (C++) │
+│  Ghostfox runtime (Rust: sessions, identities, MCP server)   │
+│                                                             │
+│  · memory capped   · CPU capped    · hard timeout           │
+│  · cap-drop ALL    · no-new-privileges · pids limit        │
+│  · container destroyed (--rm) after every task              │
+│  · only the artifact dir is mounted; nothing else crosses   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ## Containment model (Blast Radius Zero)
 
 | Control | Implementation |
 |---|---|
-| **Process isolation** | Every task runs in its own Docker container (`--rm`). Execution never touches the host or app runtime. No host volumes are mounted into the sandbox. |
-| **Secret hygiene** | API keys live only in the control layer. The sandbox receives plain-text browser steps over a local socket — credentials never cross the boundary. |
-| **Resource limits** | `--memory 512m --cpus 0.5` per container, plus a hard wall-clock timeout enforced by the orchestrator. |
-| **Lifecycle discipline** | Containers are created per task and destroyed immediately after (`docker run --rm`). No state survives a task. |
+| **Process isolation** | Every task runs in its own disposable Ghostfox container (`docker run -i --rm`). Execution never touches the host or the control-layer runtime. No host mounts except the read-out artifact dir. |
+| **Secret hygiene** | The Vultr Inference API key lives only in the control layer. The sandbox receives plain-text MCP commands over stdio — credentials never cross the boundary. |
+| **Resource limits** | `--memory 1g --cpus 1.0 --pids-limit 400` per container plus a hard wall-clock timeout that SIGKILLs the engine. |
+| **Lifecycle discipline** | Containers are created per task and destroyed immediately after; the artifact dir is wiped. Zero residue. |
 
 ## Vultr services used
 
-- **Vultr Cloud Compute (VM)** — hosts the control layer (Node.js/Express) and the Docker sandbox runtime. Vultr is the central system of control and orchestration, not static hosting.
-- **Vultr Serverless Inference** (`https://api.vultrinference.com/v1`) — powers **all** agent LLM calls: step planning (chat model) and screenshot verification (vision model). OpenAI-compatible API.
+- **Vultr Cloud Compute (VM)** — hosts the control layer (Node.js/Express) and the Docker sandbox runtime. Vultr is the central system of control and orchestration.
+- **Vultr Serverless Inference** (`https://api.vultrinference.com/v1`) — powers **all** agent reasoning: action decisions (chat) and screenshot verification (vision) via the OpenAI-compatible API. No other LLM provider is used.
 
-The sandbox image is built on the VM with plain Docker (`docker build`), keeping the whole stack on Vultr infrastructure.
+## Why the Ghostfox engine (and not headless Chromium)
+
+| | Ghostfox Zero | Typical entries |
+|---|---|---|
+| Browser engine | Ghostfox (Firefox fork, C++-level fingerprint coherence) | headless Chromium |
+| Anti-bot walls (Cloudflare etc.) | passes — engine-level spoofing | frequently blocked |
+| Agent I/O | semantic a11y tree with stable refs, vision tiers, network capture | raw DOM/CSS selectors |
+| Runtime | Rust MCP runtime (19+ tools) | JS glue |
+
+The sandbox image is pulled straight from **`ghcr.io/autokeren/ghostfox`** — the same artifact real Ghostfox users self-host.
 
 ## Quick start (on a Vultr VM)
 
 ```bash
-# 1. Provision a Vultr Cloud Compute instance (Ubuntu 22.04+, ≥1 vCPU, 2 GB RAM)
+# 1. Provision a Vultr Cloud Compute instance (Ubuntu 24.04, 1 vCPU, 2 GB RAM)
 
 # 2. Install Docker
 curl -fsSL https://get.docker.com | sh
@@ -67,10 +82,10 @@ curl -fsSL https://get.docker.com | sh
 git clone <this repo>
 cd ghostfox-zero
 cp .env.example .env
-# set VULTR_INFERENCE_API_KEY=... (from Vultr Console → Serverless Inference)
+# set VULTR_INFERENCE_API_KEY=... (Vultr Console → Serverless Inference)
 
-# 4. Build the sandbox image (hardened Playwright runner)
-docker build -t ghostfox-sandbox ./sandbox
+# 4. Pull the Ghostfox engine image (the sandbox)
+docker pull ghcr.io/autokeren/ghostfox:latest
 
 # 5. Start the control layer
 npm install --prefix server
@@ -82,31 +97,27 @@ node server/index.js
 
 ## Usage
 
-1. Type a goal, e.g. *"Go to example.com, fill the contact form with the given details, show me before you submit."*
-2. Ghostfox Zero plans the steps, executes them inside the sandbox, and verifies each one with a vision model.
-3. Before any **final action** (form submit, click that commits data), the run pauses — you review the screenshot and press **Approve** or **Reject**.
-4. When the run finishes the container is destroyed. Zero residue, zero blast radius.
+1. Type a goal, e.g. *"Open https://httpbin.org/forms/post and fill the custname field with Ghostfox Zero, then show me before submitting."*
+2. Watch the agentic loop: the engine spawns in a fresh container, opens the page, reads it semantically, and acts one step at a time — each decision made by the LLM on Vultr Serverless Inference, each step verified by the vision model.
+3. Before any **final action** (submit, purchase, send), the run pauses — review the screenshot and press **Approve** or **Reject**.
+4. When the run finishes, the container is destroyed. Zero residue, zero blast radius.
 
 ## Project layout
 
 ```
 ghostfox-zero/
-├── README.md            ← you are here
-├── docker-compose.yml   ← full stack (control layer)
-├── .env.example         ← configuration template
+├── README.md               ← you are here
+├── docker-compose.yml      ← control layer stack
+├── .env.example            ← configuration template
 ├── server/
-│   ├── index.js         ← Express app + static web UI (control layer)
-│   ├── inference.js     ← Vultr Serverless Inference client (chat + vision)
-│   ├── orchestrator.js  ← plan → dispatch → verify → approve loop
-│   └── sandbox.js       ← per-task Docker container lifecycle manager
-├── sandbox/
-│   ├── Dockerfile       ← hardened Playwright + Chromium image
-│   └── runner.js        ← executes step lists, saves screenshots, exits
-├── web/
-│   ├── index.html       ← control UI: goal input, live log, approve gate
-│   └── app.js           ← polling client + step timeline rendering
+│   ├── index.js            ← Express app + SSE events + approval API
+│   ├── mcp-client.js       ← MCP stdio client (JSON-RPC over docker -i)
+│   ├── inference.js        ← Vultr Serverless Inference client (chat + vision)
+│   ├── orchestrator.js    ← the agentic loop (read → think → act → verify → gate)
+│   └── sandbox.js          ← disposable Ghostfox container lifecycle manager
+├── web/                    ← control UI: live log, screenshots, approval gate
 └── docs/
-    └── architecture.md  ← deeper design notes
+    └── architecture.md     ← deeper design notes
 ```
 
 ## License
