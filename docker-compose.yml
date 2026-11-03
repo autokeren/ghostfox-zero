@@ -12,4 +12,8 @@ services:
       # NOTE: this is the control plane only — the SANDBOX containers
       # themselves get NO host mounts, keeping the containment contract.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Sibling-container trick: the control layer passes host paths to the
+      # docker daemon when spawning sandbox containers. Sharing /tmp keeps
+      # artifact paths identical inside and outside.
+      - /tmp:/tmp
     restart: unless-stopped
