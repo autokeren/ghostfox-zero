@@ -69,9 +69,10 @@ export async function startGhostfoxSandbox() {
         `exec 3<>/dev/tcp/127.0.0.1/7900 && printf 'GET ${path} HTTP/1.0\r\nConnection: close\r\n\r\n' >&3 && cat <&3`],
         { encoding: 'buffer', timeout: 8000, maxBuffer: 15e6 },
         (err, stdout) => {
-          if (err || !stdout || stdout.length < 16) return resolve(null);
+          if (err) console.error('[live-view relay] docker exec failed:', err.message);
+          if (!stdout || stdout.length < 16) { console.error('[live-view relay] empty/bad relay output'); return resolve(null); }
           const sep = stdout.indexOf('\r\n\r\n');
-          if (sep === -1) return resolve(null);
+          if (sep === -1) { console.error('[live-view relay] no HTTP header sep'); return resolve(null); }
           const head = stdout.slice(0, sep).toString();
           const status = parseInt(head.split(' ')[1] || '500', 10);
           const ct = (/content-type:\s*([^\r\n]+)/i.exec(head) || [])[1] || 'text/html';
