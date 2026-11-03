@@ -3,7 +3,7 @@
 // Ghostfox image (Firefox engine + Rust MCP runtime). The control layer talks
 // MCP over stdio; screenshots flow out through the mounted recordings dir.
 
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GhostfoxClient } from './mcp-client.js';
@@ -27,6 +27,9 @@ const TIMEOUT_MS = parseInt(process.env.SANDBOX_TIMEOUT_MS || '300000', 10);
  */
 export async function startGhostfoxSandbox() {
   const artifacts = await mkdtemp(join(tmpdir(), 'gf0-'));
+  // The engine inside the container writes as a different uid — make the
+  // artifact dir world-writable so screenshots can flow out.
+  await chmod(artifacts, 0o777);
 
   const extraArgs = [
     '--rm',
@@ -36,7 +39,7 @@ export async function startGhostfoxSandbox() {
     '--security-opt', 'no-new-privileges',
     '--cap-drop', 'ALL',
     '--network', 'bridge',
-    '-v', `${artifacts}:/root/.ghostfox`,
+    '-v', `${artifacts}:/data`,
   ];
 
   const client = new GhostfoxClient([]);
@@ -72,7 +75,13 @@ export async function startGhostfoxSandbox() {
     async destroy() {
       clearTimeout(killTimer);
       client.stop();
-      await new Promise((r) => setTimeout(r, 1500)); // let --rm finish
+      // Force-destroy any container still alive (killing the docker CLI
+      // process alone leaves the container running).
+      try {
+        const { execSync } = await import('node:child_process');
+        execSync(`docker ps -q --filter ancestor=${IMAGE} | xargs -r docker kill`, { stdio: 'ignore' });
+      } catch {}
+      await new Promise((r) => setTimeout(r, 1000));
       await rm(artifacts, { recursive: true, force: true });
     },
   };

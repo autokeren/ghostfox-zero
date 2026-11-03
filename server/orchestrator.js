@@ -4,35 +4,36 @@
 // at a time. Every step is verified by a vision model on Vultr Serverless
 // Inference, and final actions require explicit human approval.
 
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { chat, vision } from './inference.js';
 import { startGhostfoxSandbox } from './sandbox.js';
 
 const MAX_STEPS = 12;
 
 const DECIDE_SYSTEM = `You are the reasoning core of Ghostfox Zero, a sandboxed browser agent.
-You are given a user goal, the page URL, and a semantic accessibility snapshot of the current page
-(element refs are shown as [eN]). Decide exactly ONE next action.
+You receive: the user goal, the page URL, and a semantic accessibility snapshot of the current
+page (interactive elements carry stable refs like "e1"). Reply with exactly ONE next action.
 
-Actions you may return (strict JSON, no prose):
-{"action":"goto","url":"https://..."}                          open the first page
-{"action":"click","ref":"e12"}                                click an element by ref
-{"action":"type","ref":"e7","text":"..."}                     type into a field by ref
-{"action":"press","key":"Enter"}                               press a key
-{"action":"screenshot"}                                        capture the page for verification
-{"action":"final_click","ref":"e12"}                           click that COMMITS data (submit button) — triggers human approval
-{"action":"done","summary":"..."}                               goal achieved, stop
+Reply format — strict JSON, one object, no prose:
+{"action":"goto","url":"https://..."}          open the first page (only when no page is open)
+{"action":"click","ref":"e12"}                 click an element by its ref
+{"action":"type","ref":"e7","text":"..."}      type text into a field by its ref
+{"action":"press","key":"Enter"}              press a single key
+{"action":"final_click","ref":"e3"}           click that COMMITS data (submit/send/purchase button) — triggers human approval
+{"action":"done","summary":"..."}              goal achieved, stop
 
 Rules:
 1. One action per reply. JSON only.
-2. Use "final_click" for anything that submits/sends/purchases.
-3. If the goal is achieved or the page shows the desired result, return done.
-4. Prefer refs from the snapshot; never invent refs.`;
+2. Use ONLY refs present in the snapshot; never invent refs.
+3. Use final_click for anything that submits or commits data.
+4. If the visible page already satisfies the goal, return done.`;
 
 const VERIFY_PROMPT = (goal, lastAction) =>
-  `You are the verification layer of Ghostfox Zero.
-User goal: "${goal}".
-Last action: ${lastAction}.
-Look at the screenshot and answer STRICTLY as JSON: {"pass": true|false, "reason": "<one sentence>"}`;
+  `You are the verification layer of Ghostfox Zero, a sandboxed browser agent.
+The user's goal was: "${goal}".
+The agent just performed: ${lastAction}.
+Look at the screenshot of the current page. Answer STRICTLY as JSON: {"pass": true|false, "reason": "<one sentence>"}`;
 
 let pendingApproval = null;
 
@@ -45,19 +46,18 @@ export async function runTask(goal, onEvent) {
 
   let sessionId = null;
   let pageId = null;
+  let url = null;
   const history = [];
   const screenshots = [];
 
   try {
-    // Session + first page
     emit('phase', 'spawning ghostfox engine (disposable container)');
-    const session = await client.callJSON('session_create', {});
-    sessionId = session.session_id;
-    if (!sessionId) throw new Error('no session_id from session_create');
 
-    const act = await decideNext(goal, null, null, history);
-    let action = act;
-    let lastUrl = null;
+    sessionId = (await client.callText('session_create', {})).trim();
+    if (!sessionId) throw new Error('session_create returned no session id');
+    emit('phase', `engine session ${sessionId}`);
+
+    let action = await decideNext(goal, url, null, history);
 
     for (let step = 0; step < MAX_STEPS; step++) {
       emit('step', { n: step + 1, action });
@@ -68,88 +68,50 @@ export async function runTask(goal, onEvent) {
         break;
       }
 
-      // ---- Human approval gate for final actions ----
+      // ---- Human approval gate for committing actions ----
       if (action.action === 'final_click') {
-        const shots = await sb.screenshots();
-        if (shots.length) {
-          emit('screenshot', { index: screenshots.length, b64: shots[shots.length - 1].b64 });
-          screenshots.push(shots[shots.length - 1].b64);
-        }
+        await captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId });
         emit('approval_required', { action, step });
         const approved = await new Promise((resolve) => { pendingApproval = { resolve }; });
         pendingApproval = null;
         if (!approved) {
           emit('phase', 'rejected by human — aborting');
-          return { ok: false, rejected: true, screenshots };
+          return { ok: false, rejected: true, screenshots, history };
         }
         action = { action: 'click', ref: action.ref };
       }
 
-      // ---- Execute via Ghostfox MCP tools ----
-      switch (action.action) {
-        case 'goto': {
-          const page = await client.callJSON('page_open', { session_id: sessionId, url: action.url });
-          pageId = page.page_id;
-          lastUrl = action.url;
-          break;
-        }
-        case 'click': {
-          if (!pageId) throw new Error('no page open');
-          await client.call('page_click_ref', { session_id: sessionId, page_id: pageId, ref: action.ref });
-          break;
-        }
-        case 'type': {
-          if (!pageId) throw new Error('no page open');
-          await client.call('page_type_ref', { session_id: sessionId, page_id: pageId, ref: action.ref, text: String(action.text).slice(0, 500) });
-          break;
-        }
-        case 'press': {
-          if (!pageId) throw new Error('no page open');
-          await client.call('page_press', { session_id: sessionId, page_id: pageId, key: action.key || 'Enter' });
-          break;
-        }
-        case 'screenshot': {
-          if (!pageId) throw new Error('no page open');
-          await client.call('page_screenshot', { session_id: sessionId, page_id: pageId });
-          break;
-        }
-        default:
-          throw new Error(`unknown action: ${action.action}`);
-      }
+      // ---- Execute one action through the Ghostfox engine ----
+      const receipt = await executeAction(client, sessionId, pageId, action, (pid) => { pageId = pid; }, (u) => { url = u; });
+      if (receipt) emit('sandbox_log', receipt);
 
-      // small settle beat so dynamic pages render
+      // settle beat for dynamic pages
       if (pageId) {
         try { await client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 4000 }); } catch {}
       }
 
       // ---- Screenshot + vision verification (Vultr Inference) ----
-      const shots = await sb.screenshots();
-      const fresh = shots.slice(screenshots.length);
-      if (fresh.length) {
-        const last = fresh[fresh.length - 1];
-        emit('screenshot', { index: screenshots.length, b64: last.b64 });
-        screenshots.push(last.b64);
-
+      const b64 = await captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId });
+      if (b64) {
         try {
-          const vRaw = await vision(VERIFY_PROMPT(goal, JSON.stringify(action)), last.b64);
+          const vRaw = await vision(VERIFY_PROMPT(goal, JSON.stringify(action)), b64);
           const vJson = extractJSON(vRaw);
           emit('verify', { step, ...vJson });
-          if (vJson.pass === false) {
-            emit('phase', `verification failed: ${vJson.reason}`);
-          }
         } catch (e) {
           emit('verify_error', { message: e.message });
         }
       }
 
-      // ---- Read the page semantically and let the LLM decide next ----
+      // ---- Read the page semantically, let the LLM decide next ----
       let a11y = null;
       if (pageId) {
-        const snap = await client.call('page_a11y', { session_id: sessionId, page_id: pageId });
-        const text = (snap.content || []).map((c) => c.text || '').join('\n');
-        a11y = text.slice(0, 6000);
+        try {
+          a11y = (await client.callText('page_a11y', { session_id: sessionId, page_id: pageId })).slice(0, 8000);
+        } catch (e) {
+          emit('sandbox_log', `a11y unavailable: ${e.message}`);
+        }
       }
-      action = await decideNext(goal, lastUrl, a11y, history);
+      action = await decideNext(goal, url, a11y, history);
     }
 
     emit('phase', 'complete');
@@ -163,10 +125,62 @@ export async function runTask(goal, onEvent) {
   }
 }
 
+async function executeAction(client, sessionId, pageId, action, setPage, setUrl) {
+  switch (action.action) {
+    case 'goto': {
+      const pid = (await client.callText('page_open', { session_id: sessionId, url: action.url })).trim();
+      setPage(pid);
+      setUrl(action.url);
+      return `opened ${action.url} (page ${pid})`;
+    }
+    case 'click': {
+      if (!pageId) throw new Error('no page open');
+      await client.call('page_click_ref', { session_id: sessionId, page_id: pageId, ref: action.ref });
+      return `clicked ${action.ref}`;
+    }
+    case 'type': {
+      if (!pageId) throw new Error('no page open');
+      await client.call('page_type_ref', { session_id: sessionId, page_id: pageId, ref: action.ref, text: String(action.text).slice(0, 500) });
+      return `typed into ${action.ref}`;
+    }
+    case 'press': {
+      if (!pageId) throw new Error('no page open');
+      await client.call('page_press', { session_id: sessionId, page_id: pageId, key: action.key || 'Enter' });
+      return `pressed ${action.key || 'Enter'}`;
+    }
+    default:
+      throw new Error(`unknown action: ${action.action}`);
+  }
+}
+
+/** Take a screenshot via the engine, push it to the artifacts, return base64. */
+async function captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId }) {
+  if (!pageId) return null;
+  try {
+    const raw = await client.callText('page_screenshot', { session_id: sessionId, page_id: pageId });
+    const info = extractJSON(raw); // { bytes, file }
+    if (!info.file) return null;
+    // in-container path /data/... maps to the mounted artifacts dir
+    const hostPath = join(sb.artifacts, info.file.replace(/^\/data\/?/, ''));
+    const b64 = (await readFile(hostPath)).toString('base64');
+    emit('screenshot', { index: screenshots.length, b64 });
+    screenshots.push(b64);
+    return b64;
+  } catch (e) {
+    emit('sandbox_log', `screenshot failed: ${e.message}`);
+    return null;
+  }
+}
+
 async function decideNext(goal, url, a11y, history) {
-  const userMsg = `Goal: ${goal}\nCurrent URL: ${url || '(none yet)'}\n
-Semantic page snapshot:\n${a11y || '(page not open yet)'}\n
-Actions already taken: ${history.length ? history.map((a) => JSON.stringify(a)).join(' ; ') : 'none'}\n
+  const userMsg = `Goal: ${goal}
+Current URL: ${url || '(none yet)'}
+
+Semantic page snapshot (refs are stable):
+${a11y || '(page not open yet)'}
+
+Actions already taken: ${history.length ? history.map((a) => JSON.stringify(a)).join(' ; ') : 'none'}
+
 Decide the next single action.`;
   const raw = await chat([
     { role: 'system', content: DECIDE_SYSTEM },
@@ -178,7 +192,7 @@ Decide the next single action.`;
 function extractJSON(text) {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('no JSON in model reply');
+  if (start === -1 || end === -1) throw new Error(`no JSON in model/tool reply: ${String(text).slice(0, 80)}`);
   return JSON.parse(text.slice(start, end + 1));
 }
 

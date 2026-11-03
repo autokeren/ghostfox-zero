@@ -79,6 +79,12 @@ export class GhostfoxClient extends EventEmitter {
     return result;
   }
 
+  /** tools/call returning the first text content block as a raw string. */
+  async callText(name, args) {
+    const result = await this.call(name, args);
+    return (result.content || []).find((c) => c.type === 'text')?.text ?? '';
+  }
+
   /** tools/call returning the first text content block, parsed as JSON if possible. */
   async callJSON(name, args) {
     const result = await this.call(name, args);

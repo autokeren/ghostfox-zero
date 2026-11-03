@@ -1,17 +1,23 @@
 // server/inference.js — Vultr Serverless Inference client (OpenAI-compatible)
-// All agent LLM calls (planning + vision verification) go through this module.
+// All agent LLM calls (action decisions + vision verification) go through here.
+// NOTE: env is read lazily because ESM import hoisting evaluates this module
+// before dotenv.config() runs in index.js — reading env at module top-level
+// would capture `undefined`.
 
-const BASE_URL = process.env.VULTR_INFERENCE_BASE_URL || 'https://api.vultrinference.com/v1';
-const API_KEY = process.env.VULTR_INFERENCE_API_KEY;
+const BASE_URL = () => process.env.VULTR_INFERENCE_BASE_URL || 'https://api.vultrinference.com/v1';
+const API_KEY = () => process.env.VULTR_INFERENCE_API_KEY;
+const CHAT_MODEL = () => process.env.INFERENCE_CHAT_MODEL || 'glm-5.3-flash';
+const VISION_MODEL = () => process.env.INFERENCE_VISION_MODEL || 'glm-5.3-flash';
 
-const CHAT_MODEL = process.env.INFERENCE_CHAT_MODEL || 'qwen/qwen3-235b-a22b';
-const VISION_MODEL = process.env.INFERENCE_VISION_MODEL || 'qwen/qwen3-vl-235b-a22b';
+export function inferenceInfo() {
+  return { baseUrl: BASE_URL(), chatModel: CHAT_MODEL(), visionModel: VISION_MODEL() };
+}
 
-async function chat(messages, { model = CHAT_MODEL, maxTokens = 2048, temperature = 0.2 } = {}) {
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+async function chat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperature = 0.2 } = {}) {
+  const res = await fetch(`${BASE_URL()}/chat/completions`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -29,7 +35,7 @@ async function chat(messages, { model = CHAT_MODEL, maxTokens = 2048, temperatur
   return data.choices[0]?.message?.content ?? '';
 }
 
-async function vision(prompt, imageBase64, { model = VISION_MODEL, maxTokens = 1024 } = {}) {
+async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens = 1024 } = {}) {
   const messages = [
     {
       role: 'user',
@@ -39,10 +45,10 @@ async function vision(prompt, imageBase64, { model = VISION_MODEL, maxTokens = 1
       ],
     },
   ];
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
+  const res = await fetch(`${BASE_URL()}/chat/completions`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${API_KEY}`,
+      'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -60,4 +66,4 @@ async function vision(prompt, imageBase64, { model = VISION_MODEL, maxTokens = 1
   return data.choices[0]?.message?.content ?? '';
 }
 
-export { chat, vision, CHAT_MODEL, VISION_MODEL, BASE_URL };
+export { chat, vision };
