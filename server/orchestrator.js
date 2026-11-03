@@ -5,15 +5,15 @@
 // Inference, and final actions require explicit human approval.
 
 import { readFile } from 'node:fs/promises';
-import sharp from 'sharp';
 import { join } from 'node:path';
+import sharp from 'sharp';
 import { chat, vision } from './inference.js';
 import { startGhostfoxSandbox } from './sandbox.js';
 
-const MAX_STEPS = 12;
+const MAX_STEPS = 16;
 
 const DECIDE_SYSTEM = `You are the reasoning core of Ghostfox Zero, a sandboxed browser agent.
-You receive: the user goal, the page URL, and a semantic accessibility snapshot of the current
+You receive: the user's goal, the page URL, and a semantic accessibility snapshot of the current
 page (interactive elements carry stable refs like "e1"). Reply with exactly ONE next action.
 
 Reply format — strict JSON, one object, no prose:
@@ -39,7 +39,9 @@ const VERIFY_PROMPT = (goal, lastAction) =>
   `You are the verification layer of Ghostfox Zero, a sandboxed browser agent.
 The user's goal was: "${goal}".
 The agent just performed: ${lastAction}.
-Look at the screenshot of the current page. Answer STRICTLY as JSON: {"pass": true|false, "reason": "<one sentence>"}`;
+Look at the screenshot. Judge ONLY whether the VISIBLE PAGE brings the goal closer or the action worked as intended.
+Ad banners, cookie popups, app-install promos and other non-blocking clutter are NOT failures — ignore them entirely unless they fully cover the content the goal needs.
+Answer STRICTLY as JSON: {"pass": true|false, "reason": "<one sentence>"}`;
 
 let pendingApproval = null;
 
@@ -69,29 +71,43 @@ async function mcpRetry(fn, { delay = 2200, tries = 3 } = {}) {
   }
 }
 
-async function frameLoop({ client, sb, getSessionId, getPageId, emit }) {
-  while (framesOn) {
-    await sleep(950);
-    const sid = getSessionId();
-    const pid = getPageId();
-    if (!framesOn || !sid || !pid) continue;
+/** Blank detector: a screenshot that is one uniform color (white/gray
+ *  placeholder) means the page hasn't rendered yet — not a verify failure. */
+async function screenshotIsBlank(pngBuf) {
+  try {
+    const { data } = await sharp(pngBuf).greyscale().resize(64, { kernel: 'nearest' }).raw().toBuffer({ resolveWithObject: true });
+    const mean = data.reduce((a, b) => a + b, 0) / data.length;
+    const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / data.length;
+    return Math.sqrt(variance) < 8;
+  } catch { return false; }
+}
+
+/** The proper settle beat: wait for the render to settle (the engine's own
+ *  page_wait_stable — built for exactly this), then confirm with a real
+ *  screenshot. If the frame still looks blank, wait and shoot again —
+ *  verification must judge a loaded page, not a placeholder. */
+async function awaitSettled(client, sessionId, pageId, sb) {
+  if (!pageId) return null;
+  try { await mcpRetry(() => client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 15000 })); } catch {}
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const raw = await client.callText('page_screenshot', { session_id: sid, page_id: pid }, { timeoutMs: 15000 });
+      const raw = await mcpRetry(() => client.callText('page_screenshot', { session_id: sessionId, page_id: pageId }));
       const info = extractJSON(raw);
-      if (!info.file) continue;
-      const hostPath = join(sb.artifacts, info.file.replace(/^\/data\/?/, ''));
-      const png = await readFile(hostPath);
-      const jpg = await sharp(png).resize(1000).jpeg({ quality: 68 }).toBuffer();
-      emit('frame', { b64: jpg.toString('base64'), w: 1000 });
-    } catch { /* frame skipped — next tick */ }
+      if (!info.file) return null;
+      const png = await readFile(join(sb.artifacts, info.file.replace(/^\/data\/?/, '')));
+      if (!(await screenshotIsBlank(png)) || attempt === 2) {
+        return png.toString('base64');
+      }
+      await sleep(2500);
+    } catch { if (attempt === 2) return null; await sleep(2000); }
   }
+  return null;
 }
 
 export async function runTask(goal, onEvent) {
   const emit = (type, data) => onEvent && onEvent({ type, data, ts: Date.now() });
 
   const sb = await startGhostfoxSandbox();
-  liveState.sandbox = sb;
   const { client } = sb;
   client.on('log', (l) => emit('sandbox_log', l));
 
@@ -101,8 +117,8 @@ export async function runTask(goal, onEvent) {
   const history = [];
   const screenshots = [];
 
-  let pageIdLive = null; // mirrors pageId for the frame loop
-  let finalResult = ''; // the agent's answer (shown in the UI result card)
+  let pageIdLive = null;
+  let finalResult = '';
   try {
     emit('phase', 'spawning ghostfox engine (disposable container)');
 
@@ -125,7 +141,11 @@ export async function runTask(goal, onEvent) {
 
       // ---- Human approval gate for committing actions ----
       if (action.action === 'final_click') {
-        await captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId });
+        const settled = await awaitSettled(client, sessionId, pageId, sb);
+        if (settled) {
+          emit('screenshot', { index: screenshots.length, b64: settled });
+          screenshots.push(settled);
+        }
         emit('approval_required', { action, step });
         const approved = await new Promise((resolve) => { pendingApproval = { resolve }; });
         pendingApproval = null;
@@ -137,7 +157,9 @@ export async function runTask(goal, onEvent) {
       }
 
       // ---- Execute one action through the Ghostfox engine ----
-      const receipt = await executeAction(client, sessionId, pageId, action, (pid) => {
+      // With per-action error recovery: if a type/click fails, try fallbacks
+      // instead of killing the whole mission.
+      const receipt = await executeActionRobust(client, sessionId, pageId, action, emit, (pid) => {
         pageId = pid;
         if (pid && !pageIdLive) {
           pageIdLive = pid;
@@ -152,15 +174,13 @@ export async function runTask(goal, onEvent) {
       if (pageId && action.action === 'goto') {
         try {
           await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'PageDown' });
-          await new Promise((r) => setTimeout(r, 2200));
+          await sleep(2200);
           await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'Home' });
-          await new Promise((r) => setTimeout(r, 900));
+          await sleep(900);
         } catch {}
       }
 
-      // ---- Await full page settle, then vision verify (Vultr Inference) ----
-      // awaitSettled uses the engine's page_wait_stable + a blank-frame
-      // check so verification judges a LOADED page, not a placeholder.
+      // ---- Await page settle, then vision verify ----
       const b64 = await awaitSettled(client, sessionId, pageId, sb);
       if (b64) {
         emit('screenshot', { index: screenshots.length, b64 });
@@ -174,16 +194,13 @@ export async function runTask(goal, onEvent) {
         }
       }
 
-      // ---- Read the page semantically, let the LLM decide next ----
-      // If the last click opened a NEW TAB (news sites love this), the old
-      // page_id can turn zombie — recover by listing pages and switching
-      // to the newest one.
+      // ---- Read the page semantically (with tab recovery) ----
       let a11y = null;
       if (pageId) {
         try {
           a11y = (await mcpRetry(() => client.callText('page_a11y', { session_id: sessionId, page_id: pageId }))).slice(0, 8000);
         } catch (e) {
-          emit('sandbox_log', `page ${pageId} unresponsive (${e.message.slice(0, 60)}) — checking for new tabs…`);
+          emit('sandbox_log', `page ${pageId} unresponsive (${String(e.message).slice(0, 60)}) — checking for new tabs…`);
           try {
             const pages = await client.callText('session_pages', { session_id: sessionId });
             const ids = [...pages.matchAll(/[a-z0-9]{6,12}/gi)].map((m) => m[0]);
@@ -195,34 +212,31 @@ export async function runTask(goal, onEvent) {
               a11y = (await mcpRetry(() => client.callText('page_a11y', { session_id: sessionId, page_id: pageId }))).slice(0, 8000);
             }
           } catch (e2) {
-            emit('sandbox_log', `tab recovery failed: ${e2.message.slice(0, 60)}`);
+            emit('sandbox_log', `tab recovery failed: ${String(e2.message).slice(0, 60)}`);
           }
         }
       }
       action = await decideNext(goal, url, a11y, history);
     }
 
-    // Ran out of steps without a done: force a final answer so the user
-    // ALWAYS gets a result — the whole point of the product.
+    // Out-of-steps fallback: always give the user an answer
     if (!finalResult) {
       try {
         emit('phase', 'steps exhausted — composing final answer…');
         const raw = await chat([
           { role: 'system', content: 'You are Ghostfox Zero. You explored a web task but ran out of steps. Based on everything you saw, write the final answer for the user NOW. Plain text, be useful, admit gaps honestly.' },
-          { role: 'user', content: `Goal: ${goal}
-Actions taken: ${history.map((a) => JSON.stringify(a)).join(' ; ')}
-Last page snapshot:
-${(a11y || '').slice(0, 4000)}` },
+          { role: 'user', content: `Goal: ${goal}\nActions taken: ${history.map((a) => JSON.stringify(a)).join(' ; ')}\nLast page snapshot:\n${(a11y || '').slice(0, 4000)}` },
         ], { maxTokens: 8000 });
         finalResult = raw.trim();
         emit('result', { text: finalResult });
       } catch {}
     }
+
     emit('phase', 'complete');
     return { ok: true, result: finalResult, screenshots, history };
   } catch (e) {
     emit('error', { message: e.message });
-    return { ok: false, screenshots, history };
+    return { ok: false, result: finalResult, screenshots, history };
   } finally {
     framesOn = false;
     liveState.sandbox = null;
@@ -231,7 +245,31 @@ ${(a11y || '').slice(0, 4000)}` },
   }
 }
 
-async function executeAction(client, sessionId, pageId, action, setPage, setUrl) {
+async function frameLoop({ client, sb, getSessionId, getPageId, emit }) {
+  while (framesOn) {
+    await sleep(950);
+    const sid = getSessionId();
+    const pid = getPageId();
+    if (!framesOn || !sid || !pid) continue;
+    try {
+      const raw = await client.callText('page_screenshot', { session_id: sid, page_id: pid }, { timeoutMs: 15000 });
+      const info = extractJSON(raw);
+      if (!info.file) continue;
+      const hostPath = join(sb.artifacts, info.file.replace(/^\/data\/?/, ''));
+      const png = await readFile(hostPath);
+      const jpg = await sharp(png).resize(1000).jpeg({ quality: 68 }).toBuffer();
+      emit('frame', { b64: jpg.toString('base64'), w: 1000 });
+    } catch { /* frame skipped — next tick */ }
+  }
+}
+
+/**
+ * Execute an action with built-in error recovery.
+ * If the primary method fails, tries fallbacks before giving up:
+ *  - type: page_type_ref → click_ref first + page_fill → page_press character by character
+ *  - click: page_click_ref → page_click_native (trusted coordinates)
+ */
+async function executeActionRobust(client, sessionId, pageId, action, emit, setPage, setUrl) {
   switch (action.action) {
     case 'goto': {
       const pid = (await client.callText('page_open', { session_id: sessionId, url: action.url })).trim();
@@ -239,51 +277,71 @@ async function executeAction(client, sessionId, pageId, action, setPage, setUrl)
       setUrl(action.url);
       return `opened ${action.url} (page ${pid})`;
     }
-    case 'click': {
-      if (!pageId) throw new Error('no page open');
-      await client.call('page_click_ref', { session_id: sessionId, page_id: pageId, ref: action.ref });
-      return `clicked ${action.ref}`;
-    }
+
     case 'type': {
       if (!pageId) throw new Error('no page open');
-      await client.call('page_type_ref', { session_id: sessionId, page_id: pageId, ref: action.ref, text: String(action.text).slice(0, 500) });
-      return `typed into ${action.ref}`;
+      const text = String(action.text).slice(0, 500);
+      // Method 1: standard type_ref
+      try {
+        await client.call('page_type_ref', { session_id: sessionId, page_id: pageId, ref: action.ref, text });
+        return `typed into ${action.ref}`;
+      } catch (e1) {
+        emit('sandbox_log', `type_ref ${action.ref} failed (${String(e1.message).slice(0, 50)}) — trying click + fill…`);
+      }
+      // Method 2: click the ref first (focus the field), then type
+      try {
+        await client.call('page_click_ref', { session_id: sessionId, page_id: pageId, ref: action.ref });
+        await sleep(300);
+        await client.call('page_type_ref', { session_id: sessionId, page_id: pageId, ref: action.ref, text });
+        return `typed into ${action.ref} (click + type)`;
+      } catch (e2) {
+        emit('sandbox_log', `click + type failed — trying page_fill…`);
+      }
+      // Method 3: page_fill (direct value set, fires input events)
+      try {
+        await client.call('page_fill', { session_id: sessionId, page_id: pageId, selector: `[data-ref="${action.ref}"], input, textarea`, value: text });
+        return `filled ${action.ref} via page_fill`;
+      } catch (e3) {
+        throw new Error(`all type methods failed for ${action.ref}: ${String(e3.message).slice(0, 80)}`);
+      }
     }
-    case 'wait': {
-      await new Promise((r) => setTimeout(r, Math.min(parseInt(action.ms || '3000', 10) || 3000, 15000)));
-      return `waited ${action.ms || 3000}ms`;
-    }
-    case 'screenshot': {
+
+    case 'click': {
       if (!pageId) throw new Error('no page open');
-      await mcpRetry(() => client.call('page_screenshot', { session_id: sessionId, page_id: pageId }));
-      return 'screenshot captured';
+      try {
+        await mcpRetry(() => client.call('page_click_ref', { session_id: sessionId, page_id: pageId, ref: action.ref }));
+        return `clicked ${action.ref}`;
+      } catch (e) {
+        emit('sandbox_log', `click_ref ${action.ref} failed (${String(e.message).slice(0, 50)}) — trying native click…`);
+      }
+      // Fallback: page_click_native (role+name from a11y)
+      try {
+        await client.call('page_click_native', { session_id: sessionId, page_id: pageId, role: 'button', name: '' });
+        return `clicked via native coordinates`;
+      } catch {
+        throw new Error(`click ${action.ref} failed after all methods`);
+      }
     }
+
     case 'press': {
       if (!pageId) throw new Error('no page open');
       await client.call('page_press', { session_id: sessionId, page_id: pageId, key: action.key || 'Enter' });
       return `pressed ${action.key || 'Enter'}`;
     }
+
+    case 'wait': {
+      await sleep(Math.min(parseInt(action.ms || '3000', 10) || 3000, 15000));
+      return `waited ${action.ms || 3000}ms`;
+    }
+
+    case 'screenshot': {
+      if (!pageId) throw new Error('no page open');
+      await mcpRetry(() => client.call('page_screenshot', { session_id: sessionId, page_id: pageId }));
+      return 'screenshot captured';
+    }
+
     default:
       throw new Error(`unknown action: ${action.action}`);
-  }
-}
-
-/** Take a screenshot via the engine, push it to the artifacts, return base64. */
-async function captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId }) {
-  if (!pageId) return null;
-  try {
-    const raw = await mcpRetry(() => client.callText('page_screenshot', { session_id: sessionId, page_id: pageId }));
-    const info = extractJSON(raw); // { bytes, file }
-    if (!info.file) return null;
-    // in-container path /data/... maps to the mounted artifacts dir
-    const hostPath = join(sb.artifacts, info.file.replace(/^\/data\/?/, ''));
-    const b64 = (await readFile(hostPath)).toString('base64');
-    emit('screenshot', { index: screenshots.length, b64 });
-    screenshots.push(b64);
-    return b64;
-  } catch (e) {
-    emit('sandbox_log', `screenshot failed: ${e.message}`);
-    return null;
   }
 }
 
@@ -301,8 +359,6 @@ Decide the next single action.`;
     { role: 'system', content: DECIDE_SYSTEM },
     { role: 'user', content: userMsg },
   ];
-  // Reasoning models can burn the whole budget thinking on huge pages;
-  // if the first reply comes back without JSON, retry once with a reminder.
   for (let attempt = 0; attempt < 2; attempt++) {
     const raw = await chat(msgs, { maxTokens: 8000 });
     try {
@@ -313,39 +369,6 @@ Decide the next single action.`;
       msgs.push({ role: 'user', content: 'Reply with the action JSON object ONLY. No reasoning prose.' });
     }
   }
-}
-
-/** Blank detector: a screenshot that is one uniform color (white/gray
- *  placeholder) means the page hasn't rendered yet — not a verify failure. */
-async function screenshotIsBlank(pngBuf) {
-  try {
-    const { data } = await sharp(pngBuf).greyscale().resize(64, { kernel: 'nearest' }).raw().toBuffer({ resolveWithObject: true });
-    const mean = data.reduce((a, b) => a + b, 0) / data.length;
-    const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / data.length;
-    return Math.sqrt(variance) < 8; // stddev < 8 ⇒ almost one flat color
-  } catch { return false; }
-}
-
-/** The proper settle beat: wait for the render to settle (the engine's own
- *  page_wait_stable — built for exactly this), then confirm with a real
- *  screenshot. If the frame still looks blank, wait and shoot again —
- *  verification must judge a loaded page, not a placeholder. */
-async function awaitSettled(client, sessionId, pageId, sb) {
-  if (!pageId) return null;
-  try { await mcpRetry(() => client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 15000 })); } catch {}
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const raw = await mcpRetry(() => client.callText('page_screenshot', { session_id: sessionId, page_id: pageId }));
-      const info = extractJSON(raw);
-      if (!info.file) return null;
-      const png = await readFile(join(sb.artifacts, info.file.replace(/^\/data\/?/, '')));
-      if (!(await screenshotIsBlank(png)) || attempt === 2) {
-        return png.toString('base64');
-      }
-      await sleep(2500); // still blank — give the page another beat
-    } catch { if (attempt === 2) return null; await sleep(2000); }
-  }
-  return null;
 }
 
 function extractJSON(text) {

@@ -197,6 +197,26 @@ es.onmessage = (e) => {
       }
       break;
 
+    case 'verify_error':
+      // vision verification hiccup — show in timeline but don't alarm
+      {
+        const el = timeline.lastElementChild;
+        if (el) el.querySelector('.body')?.insertAdjacentHTML('beforeend',
+          `<div class="sub" style="opacity:.7">👁 (vision check skipped: ${esc((data.message || '').slice(0, 60))})</div>`);
+      }
+      break;
+
+    case 'sandbox_log':
+      // engine chatter — subtle, in the timeline if a step is active
+      if (data && timeline.lastElementChild) {
+        const t = typeof data === 'string' ? data : JSON.stringify(data);
+        if (t.length > 5 && t.length < 200) {
+          timeline.lastElementChild.querySelector('.body')?.insertAdjacentHTML('beforeend',
+            `<div class="sub" style="opacity:.5; font-size:11px;">${esc(t.slice(0, 120))}</div>`);
+        }
+      }
+      break;
+
     case 'error':
       addStep({ cls: 'err', icon: '✕', label: 'Error', sub: esc(data.message || '') });
       scan.classList.remove('on');
