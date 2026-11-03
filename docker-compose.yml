@@ -1,0 +1,15 @@
+services:
+  ghostfox-zero:
+    build:
+      context: ./server
+    image: ghostfox-zero
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      # the control layer needs the docker socket to spawn sandbox containers.
+      # NOTE: this is the control plane only — the SANDBOX containers
+      # themselves get NO host mounts, keeping the containment contract.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped

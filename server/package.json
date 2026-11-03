@@ -1,0 +1,14 @@
+{
+  "name": "ghostfox-zero-server",
+  "version": "1.0.0",
+  "description": "Control layer for Ghostfox Zero — sandboxed browser agent with zero blast radius",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
+  }
+}
