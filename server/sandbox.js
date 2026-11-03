@@ -105,11 +105,12 @@ export async function startGhostfoxSandbox() {
     async destroy() {
       clearTimeout(killTimer);
       client.stop();
-      // Force-destroy any container still alive (killing the docker CLI
-      // process alone leaves the container running).
+      // Force-kill THIS container by name (orphan prevention) — stopping
+      // the docker CLI stdin alone does NOT stop the container.
       try {
         const { execSync } = await import('node:child_process');
-        execSync(`docker ps -q --filter ancestor=${IMAGE} | xargs -r docker kill`, { stdio: 'ignore' });
+        execSync(`docker kill ${name} 2>/dev/null || true`, { stdio: 'ignore' });
+        execSync(`docker rm -f ${name} 2>/dev/null || true`, { stdio: 'ignore' });
       } catch {}
       await new Promise((r) => setTimeout(r, 1000));
       await rm(artifacts, { recursive: true, force: true });
