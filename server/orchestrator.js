@@ -184,7 +184,7 @@ export async function runTask(goal, onEvent) {
         } catch {}
       }
 
-      // ---- Await page settle, then vision verify ----
+      // ---- Await page settle, then vision verify (with CAPTCHA auto-detect) ----
       const b64 = await awaitSettled(client, sessionId, pageId, sb);
       if (b64) {
         emit('screenshot', { index: screenshots.length, b64 });
@@ -193,6 +193,23 @@ export async function runTask(goal, onEvent) {
           const vRaw = await vision(VERIFY_PROMPT(goal, JSON.stringify(action)), b64);
           const vJson = extractJSON(vRaw);
           emit('verify', { step, ...vJson });
+          // Auto-solve: if vision says CAPTCHA is blocking, trigger the solver
+          if (/captcha/i.test(vJson.reason || '') && /unsolve|uncheck|fail|block|not.*solve/i.test(vJson.reason || '')) {
+            emit('sandbox_log', '⚠️ CAPTCHA detected by vision — auto-triggering solver…');
+            try {
+              const capAction = { action: 'solve_captcha' };
+              const capReceipt = await executeActionRobust(client, sessionId, pageId, capAction, emit, () => {}, () => {});
+              if (capReceipt) emit('sandbox_log', capReceipt);
+              await sleep(3000);
+              const postB64 = await awaitSettled(client, sessionId, pageId, sb);
+              if (postB64) {
+                emit('screenshot', { index: screenshots.length, b64: postB64 });
+                screenshots.push(postB64);
+              }
+            } catch (capErr) {
+              emit('sandbox_log', `CAPTCHA solver error: ${String(capErr.message).slice(0, 100)}`);
+            }
+          }
         } catch (e) {
           emit('verify_error', { message: e.message });
         }
