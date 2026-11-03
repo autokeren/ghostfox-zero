@@ -32,7 +32,8 @@ Rules:
 3. Use final_click for anything that submits or commits data.
 4. If the visible page already satisfies the goal, return done.
 5. If the last screenshot looked blank/empty (SPA still loading), use {"action":"wait","ms":5000} then {"action":"screenshot"}.
-6. When the goal asks for information (summarize/list/find/describe/what is...), the done action MUST carry the full answer text in "result" — that is the product the user gets.`;
+6. When the goal asks for information (summarize/list/find/describe/what is...), the done action MUST carry the full answer text in "result" — that is the product the user gets.
+7. Do NOT waste steps dismissing ad banners, cookie popups or app-install promos unless they FULLY BLOCK the content you need. Read around them and go straight for the goal.`;
 
 const VERIFY_PROMPT = (goal, lastAction) =>
   `You are the verification layer of Ghostfox Zero, a sandboxed browser agent.
@@ -201,6 +202,22 @@ export async function runTask(goal, onEvent) {
       action = await decideNext(goal, url, a11y, history);
     }
 
+    // Ran out of steps without a done: force a final answer so the user
+    // ALWAYS gets a result — the whole point of the product.
+    if (!finalResult) {
+      try {
+        emit('phase', 'steps exhausted — composing final answer…');
+        const raw = await chat([
+          { role: 'system', content: 'You are Ghostfox Zero. You explored a web task but ran out of steps. Based on everything you saw, write the final answer for the user NOW. Plain text, be useful, admit gaps honestly.' },
+          { role: 'user', content: `Goal: ${goal}
+Actions taken: ${history.map((a) => JSON.stringify(a)).join(' ; ')}
+Last page snapshot:
+${(a11y || '').slice(0, 4000)}` },
+        ], { maxTokens: 8000 });
+        finalResult = raw.trim();
+        emit('result', { text: finalResult });
+      } catch {}
+    }
     emit('phase', 'complete');
     return { ok: true, result: finalResult, screenshots, history };
   } catch (e) {
