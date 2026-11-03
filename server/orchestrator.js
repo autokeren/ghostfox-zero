@@ -75,7 +75,7 @@ async function frameLoop({ client, sb, getSessionId, getPageId, emit }) {
     const pid = getPageId();
     if (!framesOn || !sid || !pid) continue;
     try {
-      const raw = await client.callText('page_screenshot', { session_id: sid, page_id: pid });
+      const raw = await client.callText('page_screenshot', { session_id: sid, page_id: pid }, { timeoutMs: 15000 });
       const info = extractJSON(raw);
       if (!info.file) continue;
       const hostPath = join(sb.artifacts, info.file.replace(/^\/data\/?/, ''));
@@ -174,12 +174,28 @@ export async function runTask(goal, onEvent) {
       }
 
       // ---- Read the page semantically, let the LLM decide next ----
+      // If the last click opened a NEW TAB (news sites love this), the old
+      // page_id can turn zombie — recover by listing pages and switching
+      // to the newest one.
       let a11y = null;
       if (pageId) {
         try {
           a11y = (await mcpRetry(() => client.callText('page_a11y', { session_id: sessionId, page_id: pageId }))).slice(0, 8000);
         } catch (e) {
-          emit('sandbox_log', `a11y unavailable: ${e.message}`);
+          emit('sandbox_log', `page ${pageId} unresponsive (${e.message.slice(0, 60)}) — checking for new tabs…`);
+          try {
+            const pages = await client.callText('session_pages', { session_id: sessionId });
+            const ids = [...pages.matchAll(/[a-z0-9]{6,12}/gi)].map((m) => m[0]);
+            const fresh = ids.filter((x) => x !== pageId && x !== sessionId);
+            if (fresh.length) {
+              pageId = fresh[fresh.length - 1];
+              pageIdLive = pageId;
+              emit('sandbox_log', `switched to new page: ${pageId}`);
+              a11y = (await mcpRetry(() => client.callText('page_a11y', { session_id: sessionId, page_id: pageId }))).slice(0, 8000);
+            }
+          } catch (e2) {
+            emit('sandbox_log', `tab recovery failed: ${e2.message.slice(0, 60)}`);
+          }
         }
       }
       action = await decideNext(goal, url, a11y, history);

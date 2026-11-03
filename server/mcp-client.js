@@ -46,11 +46,18 @@ export class GhostfoxClient extends EventEmitter {
     }
   }
 
-  request(method, params) {
+  request(method, params, { timeoutMs = 45000 } = {}) {
     return new Promise((resolve, reject) => {
       if (!this.proc || this.proc.killed) return reject(new Error('container not running'));
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
       this.proc.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
     });
   }
@@ -71,8 +78,8 @@ export class GhostfoxClient extends EventEmitter {
   }
 
   /** tools/call — returns the tool result content text. */
-  async call(name, args) {
-    const result = await this.request('tools/call', { name, arguments: args });
+  async call(name, args, opts = {}) {
+    const result = await this.request('tools/call', { name, arguments: args }, opts);
     if (result.isError) {
       throw new Error(`tool ${name} failed: ${JSON.stringify(result.content).slice(0, 200)}`);
     }
@@ -80,8 +87,8 @@ export class GhostfoxClient extends EventEmitter {
   }
 
   /** tools/call returning the first text content block as a raw string. */
-  async callText(name, args) {
-    const result = await this.call(name, args);
+  async callText(name, args, opts = {}) {
+    const result = await this.call(name, args, opts);
     return (result.content || []).find((c) => c.type === 'text')?.text ?? '';
   }
 
