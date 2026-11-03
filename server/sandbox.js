@@ -12,7 +12,7 @@ import { GhostfoxClient } from './mcp-client.js';
 const IMAGE = process.env.GHOSTFOX_IMAGE || 'ghcr.io/autokeren/ghostfox:latest';
 const MEMORY = process.env.SANDBOX_MEMORY || '1g';
 const CPUS = process.env.SANDBOX_CPUS || '1.0';
-const TIMEOUT_MS = parseInt(process.env.SANDBOX_TIMEOUT_MS || '300000', 10);
+const TIMEOUT_MS = parseInt(process.env.SANDBOX_TIMEOUT_MS || '600000', 10);
 
 /**
  * Spawn a disposable Ghostfox engine container and return a live MCP client
