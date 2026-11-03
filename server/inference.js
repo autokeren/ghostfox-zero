@@ -13,7 +13,22 @@ export function inferenceInfo() {
   return { baseUrl: BASE_URL(), chatModel: CHAT_MODEL(), visionModel: VISION_MODEL() };
 }
 
-async function chat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperature = 0.2 } = {}) {
+/** Retry on transient 502/503 — Vultr Inference occasionally overloads. */
+async function withRetry(fn, { tries = 3, delayMs = 3000 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (i === tries - 1) throw e;
+      if (/502|503|unavailable|timeout/i.test(e.message)) {
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+async function rawChat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperature = 0.2 } = {}) {
   const res = await fetch(`${BASE_URL()}/chat/completions`, {
     method: 'POST',
     signal: AbortSignal.timeout(120_000),
@@ -21,12 +36,7 @@ async function chat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperat
       'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      temperature,
-    }),
+    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -36,16 +46,11 @@ async function chat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperat
   return data.choices[0]?.message?.content ?? '';
 }
 
-async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens = 2048 } = {}) {
-  const messages = [
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
-      ],
-    },
-  ];
+async function rawVision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens = 2048 } = {}) {
+  const messages = [{ role: 'user', content: [
+    { type: 'text', text: prompt },
+    { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+  ]}];
   const res = await fetch(`${BASE_URL()}/chat/completions`, {
     method: 'POST',
     signal: AbortSignal.timeout(120_000),
@@ -53,12 +58,7 @@ async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens =
       'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0,
-    }),
+    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0 }),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -68,4 +68,5 @@ async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens =
   return data.choices[0]?.message?.content ?? '';
 }
 
-export { chat, vision };
+export async function chat(messages, opts) { return withRetry(() => rawChat(messages, opts)); }
+export async function vision(prompt, b64, opts) { return withRetry(() => rawVision(prompt, b64, opts)); }

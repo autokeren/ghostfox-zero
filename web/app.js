@@ -35,9 +35,9 @@ function addStep({ cls, icon, label, sub, extra }) {
       <div class="lbl">${label}${extra || ''}</div>
       ${sub ? `<div class="sub">${sub}</div>` : ''}
     </div>`;
-  timeline.appendChild(el);
-  // auto-scroll: newest step always visible — no mouse needed while recording
-  requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight; });
+  // NEWEST FIRST: prepend so the latest step is always at the top —
+  // zero scrolling needed, perfect for recording and live viewing
+  timeline.prepend(el);
   return el;
 }
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
