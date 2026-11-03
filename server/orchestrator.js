@@ -20,6 +20,8 @@ Reply format — strict JSON, one object, no prose:
 {"action":"click","ref":"e12"}                 click an element by its ref
 {"action":"type","ref":"e7","text":"..."}      type text into a field by its ref
 {"action":"press","key":"Enter"}              press a single key
+{"action":"wait","ms":5000}                    wait for slow/loading pages (SPA, skeleton screens)
+{"action":"screenshot"}                        take a fresh screenshot (use after waiting)
 {"action":"final_click","ref":"e3"}           click that COMMITS data (submit/send/purchase button) — triggers human approval
 {"action":"done","summary":"..."}              goal achieved, stop
 
@@ -27,7 +29,8 @@ Rules:
 1. One action per reply. JSON only.
 2. Use ONLY refs present in the snapshot; never invent refs.
 3. Use final_click for anything that submits or commits data.
-4. If the visible page already satisfies the goal, return done.`;
+4. If the visible page already satisfies the goal, return done.
+5. If the last screenshot looked blank/empty (SPA still loading), use {"action":"wait","ms":5000} then {"action":"screenshot"}.`;
 
 const VERIFY_PROMPT = (goal, lastAction) =>
   `You are the verification layer of Ghostfox Zero, a sandboxed browser agent.
@@ -87,7 +90,7 @@ export async function runTask(goal, onEvent) {
 
       // settle beat for dynamic pages
       if (pageId) {
-        try { await client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 4000 }); } catch {}
+        try { await client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 15000 }); } catch {}
       }
 
       // ---- Screenshot + vision verification (Vultr Inference) ----
@@ -142,6 +145,15 @@ async function executeAction(client, sessionId, pageId, action, setPage, setUrl)
       if (!pageId) throw new Error('no page open');
       await client.call('page_type_ref', { session_id: sessionId, page_id: pageId, ref: action.ref, text: String(action.text).slice(0, 500) });
       return `typed into ${action.ref}`;
+    }
+    case 'wait': {
+      await new Promise((r) => setTimeout(r, Math.min(parseInt(action.ms || '3000', 10) || 3000, 15000)));
+      return `waited ${action.ms || 3000}ms`;
+    }
+    case 'screenshot': {
+      if (!pageId) throw new Error('no page open');
+      await client.call('page_screenshot', { session_id: sessionId, page_id: pageId });
+      return 'screenshot captured';
     }
     case 'press': {
       if (!pageId) throw new Error('no page open');
