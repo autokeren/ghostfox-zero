@@ -129,6 +129,16 @@ export async function runTask(goal, onEvent) {
       // settle beat for dynamic pages
       if (pageId) {
         try { await client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 15000 }); } catch {}
+        // Lazy-load nudge: news sites & SPAs only fill content on scroll.
+        // One PageDown wakes the loaders, Home returns to the top.
+        if (action.action === 'goto') {
+          try {
+            await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'PageDown' });
+            await new Promise((r) => setTimeout(r, 2200));
+            await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'Home' });
+            await new Promise((r) => setTimeout(r, 900));
+          } catch {}
+        }
       }
 
       // ---- Screenshot + vision verification (Vultr Inference) ----
