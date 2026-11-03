@@ -1,7 +1,6 @@
 FROM node:24-slim
 
 # Docker CLI only (client) — the daemon socket is mounted from the host.
-# The control layer uses it to spawn/destroy sandbox containers.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
   && install -m 0755 -d /etc/apt/keyrings \
   && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
@@ -10,9 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package.json ./
+COPY server/package.json ./
 RUN npm install --omit=dev
-COPY *.js ./
+COPY server/*.js ./
+COPY web ./web
 
 EXPOSE 3000
 CMD ["node", "index.js"]
