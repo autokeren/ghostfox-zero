@@ -10,7 +10,7 @@ import sharp from 'sharp';
 import { chat, vision } from './inference.js';
 import { startGhostfoxSandbox } from './sandbox.js';
 
-const MAX_STEPS = 16;
+const MAX_STEPS = 20;
 
 const DECIDE_SYSTEM = `You are the reasoning core of Ghostfox Zero, a sandboxed browser agent.
 You receive: the user's goal, the page URL, and a semantic accessibility snapshot of the current
@@ -23,6 +23,8 @@ Reply format — strict JSON, one object, no prose:
 {"action":"press","key":"Enter"}              press a single key
 {"action":"wait","ms":5000}                    wait for slow/loading pages (SPA, skeleton screens)
 {"action":"screenshot"}                        take a fresh screenshot (use after waiting)
+{"action":"dismiss_modal"}                    dismiss cookie banners, popups, overlays
+{"action":"solve_captcha"}                    if a CAPTCHA is visible on the page, solve it automatically
 {"action":"final_click","ref":"e3"}           click that COMMITS data (submit/send/purchase button) — triggers human approval
 {"action":"done","result":"<full answer for the user — the actual summary/data requested>","summary":"one line"}  goal achieved; ALWAYS put the complete answer in result (the UI shows it to the user)
 
@@ -33,7 +35,9 @@ Rules:
 4. If the visible page already satisfies the goal, return done.
 5. If the last screenshot looked blank/empty (SPA still loading), use {"action":"wait","ms":5000} then {"action":"screenshot"}.
 6. When the goal asks for information (summarize/list/find/describe/what is...), the done action MUST carry the full answer text in "result" — that is the product the user gets.
-7. Do NOT waste steps dismissing ad banners, cookie popups or app-install promos unless they FULLY BLOCK the content you need. Read around them and go straight for the goal.`;
+7. Use dismiss_modal for cookie banners and popup overlays that block content.
+8. If you see a CAPTCHA (checkbox challenge, image grid, slide puzzle), immediately use {"action":"solve_captcha"} — this engine has built-in CAPTCHA solving.
+9. Do NOT waste steps dismissing ad banners, cookie popups or app-install promos unless they FULLY BLOCK the content you need. Read around them and go straight for the goal.`;
 
 const VERIFY_PROMPT = (goal, lastAction) =>
   `You are the verification layer of Ghostfox Zero, a sandboxed browser agent.
@@ -221,15 +225,20 @@ export async function runTask(goal, onEvent) {
 
     // Out-of-steps fallback: always give the user an answer
     if (!finalResult) {
-      try {
-        emit('phase', 'steps exhausted — composing final answer…');
-        const raw = await chat([
-          { role: 'system', content: 'You are Ghostfox Zero. You explored a web task but ran out of steps. Based on everything you saw, write the final answer for the user NOW. Plain text, be useful, admit gaps honestly.' },
-          { role: 'user', content: `Goal: ${goal}\nActions taken: ${history.map((a) => JSON.stringify(a)).join(' ; ')}\nLast page snapshot:\n${(a11y || '').slice(0, 4000)}` },
-        ], { maxTokens: 8000 });
-        finalResult = raw.trim();
-        emit('result', { text: finalResult });
-      } catch {}
+      emit('phase', 'steps exhausted — composing final answer…');
+      // Try up to 3 times — reasoning models sometimes return empty
+      for (let fa = 0; fa < 3 && !finalResult; fa++) {
+        try {
+          const raw = await chat([
+            { role: 'system', content: 'You are Ghostfox Zero. You explored a web task but ran out of steps. Based on ALL the actions you took and the page snapshots you saw, write a COMPLETE and USEFUL final answer for the user RIGHT NOW. Be specific about what you accomplished and what you found. Never return an empty response.' },
+            { role: 'user', content: `Goal: ${goal}\nActions taken: ${history.map((a) => JSON.stringify(a)).join(' ; ')}\nLast page snapshot:\n${(a11y || '').slice(0, 4000)}\nScreenshots verified: ${screenshots.length}` },
+          ], { maxTokens: 8000, temperature: 0.7 });
+          finalResult = raw.trim() || `Task explored: opened and interacted with pages toward "${goal}". Completed ${history.length} actions with ${screenshots.length} verified screenshots before reaching the step limit. Partial results are shown in the screenshot gallery.`;
+        } catch { /* retry */ }
+        if (!finalResult) await sleep(2000);
+      }
+      if (!finalResult) finalResult = `Explored "${goal}" — ran out of steps after ${history.length} actions. See screenshots for what was accomplished.`;
+      emit('result', { text: finalResult });
     }
 
     emit('phase', 'complete');
@@ -338,6 +347,42 @@ async function executeActionRobust(client, sessionId, pageId, action, emit, setP
       if (!pageId) throw new Error('no page open');
       await mcpRetry(() => client.call('page_screenshot', { session_id: sessionId, page_id: pageId }));
       return 'screenshot captured';
+    }
+
+    case 'dismiss_modal': {
+      if (!pageId) throw new Error('no page open');
+      try {
+        await client.call('page_dismiss_modal', { session_id: sessionId, page_id: pageId });
+        return 'modal dismissed';
+      } catch {
+        return 'no modal found (ok)';
+      }
+    }
+
+    case 'solve_captcha': {
+      if (!pageId) throw new Error('no page open');
+      // Ghostfox has 8 CAPTCHA solving families — let the engine decide
+      try {
+        const result = await client.call('captcha_solve', { session_id: sessionId, page_id: pageId });
+        const text = (result.content || []).map(c => c.text || '').join(' ');
+        return `CAPTCHA solve attempt: ${text.slice(0, 200)}`;
+      } catch (e1) {
+        emit('sandbox_log', `captcha_solve failed (${String(e1.message).slice(0, 60)}) — trying hCaptcha solver…`);
+      }
+      // Fallback: hCaptcha solver
+      try {
+        await client.call('page_hcaptcha', { session_id: sessionId, page_id: pageId });
+        return 'hCaptcha solved';
+      } catch (e2) {
+        emit('sandbox_log', `hCaptcha solver failed (${String(e2.message).slice(0, 60)}) — trying OCR…`);
+      }
+      // Fallback: image captcha OCR
+      try {
+        const ocr = await client.callText('page_captcha_ocr', { session_id: sessionId, page_id: pageId });
+        return `CAPTCHA OCR: ${ocr.slice(0, 100)}`;
+      } catch (e3) {
+        throw new Error(`all CAPTCHA solvers failed: ${String(e3.message).slice(0, 80)}`);
+      }
     }
 
     default:

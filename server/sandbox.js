@@ -37,6 +37,7 @@ export async function startGhostfoxSandbox() {
     '--rm',
     '--name', name,
     '-e', 'GHOSTFOX_LIVE_VIEW_PORT=7900',
+    '-e', 'GHOSTFOX_TOOLSET=full',
     '--memory', MEMORY,
     '--cpus', CPUS,
     '--pids-limit', '400',
