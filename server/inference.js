@@ -16,6 +16,7 @@ export function inferenceInfo() {
 async function chat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperature = 0.2 } = {}) {
   const res = await fetch(`${BASE_URL()}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(120_000),
     headers: {
       'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
@@ -35,7 +36,7 @@ async function chat(messages, { model = CHAT_MODEL(), maxTokens = 2048, temperat
   return data.choices[0]?.message?.content ?? '';
 }
 
-async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens = 1024 } = {}) {
+async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens = 2048 } = {}) {
   const messages = [
     {
       role: 'user',
@@ -47,6 +48,7 @@ async function vision(prompt, imageBase64, { model = VISION_MODEL(), maxTokens =
   ];
   const res = await fetch(`${BASE_URL()}/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(120_000),
     headers: {
       'Authorization': `Bearer ${API_KEY()}`,
       'Content-Type': 'application/json',
