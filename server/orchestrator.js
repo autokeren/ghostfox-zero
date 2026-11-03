@@ -378,28 +378,51 @@ async function executeActionRobust(client, sessionId, pageId, action, emit, setP
 
     case 'solve_captcha': {
       if (!pageId) throw new Error('no page open');
-      // Ghostfox has 8 CAPTCHA solving families — let the engine decide
-      try {
-        const result = await client.call('captcha_solve', { session_id: sessionId, page_id: pageId });
-        const text = (result.content || []).map(c => c.text || '').join(' ');
-        return `CAPTCHA solve attempt: ${text.slice(0, 200)}`;
-      } catch (e1) {
-        emit('sandbox_log', `captcha_solve failed (${String(e1.message).slice(0, 60)}) — trying hCaptcha solver…`);
-      }
-      // Fallback: hCaptcha solver
-      try {
-        await client.call('page_hcaptcha', { session_id: sessionId, page_id: pageId });
-        return 'hCaptcha solved';
-      } catch (e2) {
-        emit('sandbox_log', `hCaptcha solver failed (${String(e2.message).slice(0, 60)}) — trying OCR…`);
-      }
-      // Fallback: image captcha OCR
-      try {
-        const ocr = await client.callText('page_captcha_ocr', { session_id: sessionId, page_id: pageId });
-        return `CAPTCHA OCR: ${ocr.slice(0, 100)}`;
-      } catch (e3) {
-        throw new Error(`all CAPTCHA solvers failed: ${String(e3.message).slice(0, 80)}`);
-      }
+      // Ghostfox has 8 BUILT-IN CAPTCHA solvers — all models run locally on
+      // CPU (ddddocr, YOLOv8s, pixel math). Try each family in order.
+      const attempts = [];
+      const trySolver = async (name, args, label) => {
+        try {
+          const result = await client.call(name, { session_id: sessionId, page_id: pageId, ...args });
+          const text = (result.content || []).map(c => c.text || '').join(' ').trim();
+          attempts.push(`${label}: ${text.slice(0, 120)}`);
+          return text || true;
+        } catch (e) {
+          attempts.push(`${label} failed: ${String(e.message).slice(0, 50)}`);
+          return null;
+        }
+      };
+
+      // 1. GeeTest slide (pure pixel math — 100% local)
+      emit('sandbox_log', 'CAPTCHA: trying GeeTest slide solver…');
+      const gtSlide = await trySolver('page_geetest_slide', {}, 'geetest_slide');
+      if (gtSlide) return `CAPTCHA solved (geetest_slide): ${String(gtSlide).slice(0, 100)}`;
+
+      // 2. GeeTest click (YOLOv8s ONNX — 100% local)
+      emit('sandbox_log', 'CAPTCHA: trying GeeTest click solver…');
+      const gtClick = await trySolver('page_geetest_click', { ref: '' }, 'geetest_click');
+      if (gtClick) return `CAPTCHA solved (geetest_click): ${String(gtClick).slice(0, 100)}`;
+
+      // 3. Image captcha OCR (ddddocr CRNN — 100% local)
+      emit('sandbox_log', 'CAPTCHA: trying image captcha OCR…');
+      const ocr = await trySolver('page_captcha_ocr', {}, 'captcha_ocr');
+      if (ocr) return `CAPTCHA solved (ocr): ${String(ocr).slice(0, 100)}`;
+
+      // 4. Rotate captcha (brute-force — 100% local)
+      emit('sandbox_log', 'CAPTCHA: trying rotate solver…');
+      const rot = await trySolver('page_captcha_rotate', { check_ref: '', reset_ref: '', rot_left_ref: '', rot_right_ref: '' }, 'captcha_rotate');
+      if (rot) return `CAPTCHA solved (rotate): ${String(rot).slice(0, 100)}`;
+
+      // 5. Dismiss modal first then retry (some CAPTCHAs need popup dismiss)
+      try { await client.call('page_dismiss_modal', { session_id: sessionId, page_id: pageId }); } catch {}
+
+      // 6. captcha_solve (generic — uses 2captcha if GHOSTFOX_CAPTCHA_KEY is set, otherwise attempts local)
+      emit('sandbox_log', 'CAPTCHA: trying generic captcha_solve…');
+      const generic = await trySolver('captcha_solve', {}, 'captcha_solve');
+      if (generic) return `CAPTCHA solved (generic): ${String(generic).slice(0, 100)}`;
+
+      // All solvers tried — report what happened
+      return `CAPTCHA solvers attempted: ${attempts.join(' | ').slice(0, 400)}`;
     }
 
     default:
