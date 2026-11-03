@@ -3,63 +3,306 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ghostfox Zero — zero blast radius</title>
+<title>Ghostfox Zero — Your digital worker for boring web chores</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0b0f14; --panel:#121820; --ink:#e8eef4; --dim:#8b98a5; --fox:#ff7a1a; --ok:#2fbf71; --bad:#e5484d; }
-  * { box-sizing: border-box; margin: 0; }
-  body { background:var(--bg); color:var(--ink); font-family: ui-monospace, "SF Mono", Menlo, monospace; min-height:100vh; display:flex; flex-direction:column; }
-  header { padding:18px 24px; border-bottom:1px solid #1d2733; display:flex; align-items:center; gap:12px; }
-  header .logo { font-size:20px; color:var(--fox); }
-  header h1 { font-size:15px; font-weight:600; letter-spacing:.5px; }
-  header .sub { color:var(--dim); font-size:11px; margin-left:auto; text-align:right }
-  main { flex:1; display:grid; grid-template-columns: 1fr 1fr; gap:16px; padding:20px; max-width:1200px; width:100%; margin:0 auto; }
-  .panel { background:var(--panel); border:1px solid #1d2733; border-radius:10px; padding:16px; }
-  .panel h2 { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; }
-  textarea { width:100%; height:84px; background:#0d131a; color:var(--ink); border:1px solid #243140; border-radius:8px; padding:10px; font:inherit; resize:vertical; }
-  button { background:var(--fox); border:0; color:#141414; font:inherit; font-weight:700; padding:10px 18px; border-radius:8px; cursor:pointer; margin-top:10px; }
-  button:disabled { background:#333d4a; color:#777; cursor:not-allowed; }
-  #log { height:260px; overflow-y:auto; font-size:12px; line-height:1.7; white-space:pre-wrap; word-break:break-word; }
-  #log .phase { color:var(--fox); } #log .err { color:var(--bad); } #log .dim { color:var(--dim); }
-  #shots { display:flex; flex-direction:column; gap:10px; max-height:520px; overflow-y:auto; }
-  #shots img { width:100%; border:1px solid #243140; border-radius:8px; }
-  #gate { display:none; margin-top:12px; padding:12px; border:1px solid var(--fox); border-radius:8px; background:#1a1207; }
-  #gate p { font-size:12px; margin-bottom:10px; color:var(--fox); }
-  #gate .row { display:flex; gap:10px; }
-  #gate .approve { background:var(--ok); } #gate .reject { background:var(--bad); color:#fff; }
-  #status { margin-top:8px; font-size:11px; color:var(--dim); }
+  :root {
+    --bg: #0a0c10;
+    --bg-soft: #11141b;
+    --card: #141824;
+    --card-2: #181d2c;
+    --line: #232a3d;
+    --ink: #eef1f7;
+    --dim: #8d95a8;
+    --fox: #ff7a1a;
+    --fox-soft: rgba(255,122,26,.14);
+    --ok: #34d399;
+    --ok-soft: rgba(52,211,153,.12);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251,191,36,.12);
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background:
+      radial-gradient(1200px 500px at 85% -10%, rgba(255,122,26,.09), transparent 60%),
+      radial-gradient(900px 400px at 10% 110%, rgba(99,102,241,.08), transparent 60%),
+      var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--fox); text-decoration: none; }
+
+  /* ── Top bar ─────────────────────────────── */
+  .top {
+    display: flex; align-items: center; gap: 14px;
+    padding: 18px 28px; border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 50;
+    background: rgba(10,12,16,.75);
+  }
+  .logo { font-size: 26px; }
+  .brand { font-weight: 800; font-size: 16px; letter-spacing: .3px; }
+  .brand em { color: var(--fox); font-style: normal; }
+  .tag { color: var(--dim); font-size: 12px; border: 1px solid var(--line); padding: 4px 10px; border-radius: 99px; }
+  .top .spacer { flex: 1; }
+  .status-pill {
+    display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim);
+    border: 1px solid var(--line); padding: 6px 12px; border-radius: 99px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; }
+  .dot.live { background: var(--fox); box-shadow: 0 0 12px var(--fox); animation: pulse 1.4s infinite; }
+  .dot.ok { background: var(--ok); }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  main { max-width: 1200px; margin: 0 auto; padding: 34px 28px 90px; }
+
+  /* ── Hero / mission input ───────────────── */
+  .hero { text-align: center; max-width: 780px; margin: 30px auto 40px; }
+  .hero h1 { font-size: clamp(30px, 4.6vw, 52px); font-weight: 800; line-height: 1.12; letter-spacing: -.5px; }
+  .hero h1 em { color: var(--fox); font-style: normal; }
+  .hero p { color: var(--dim); font-size: 16px; line-height: 1.65; margin: 18px auto 28px; max-width: 560px; }
+  .mission {
+    display: flex; gap: 12px; background: var(--card); border: 1px solid var(--line);
+    padding: 10px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  }
+  .mission input {
+    flex: 1; background: transparent; border: 0; outline: 0; color: var(--ink);
+    font: inherit; font-size: 15px; padding: 10px 14px;
+  }
+  .mission input::placeholder { color: #5b6172; }
+  .btn {
+    background: linear-gradient(180deg, #ff8c39, var(--fox)); color: #1a0d02;
+    font-weight: 700; font-size: 14px; border: 0; cursor: pointer;
+    padding: 12px 22px; border-radius: 11px; transition: transform .12s, box-shadow .2s;
+    display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 10px 30px rgba(255,122,26,.35); }
+  .btn:disabled { background: #2a3145; color: #667; cursor: not-allowed; transform: none; box-shadow: none; }
+  .btn.ghosty { background: transparent; color: var(--dim); border: 1px solid var(--line); }
+  .btn.ok { background: linear-gradient(180deg, #4be0ab, #22b47f); color: #052; }
+  .btn.no { background: linear-gradient(180deg, #ff8f8f, #ef5353); color: #400; }
+
+  .chips { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 22px; }
+  .chip {
+    font-size: 12.5px; color: var(--dim); border: 1px solid var(--line);
+    background: var(--card); padding: 8px 14px; border-radius: 99px; cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  .chip:hover { border-color: var(--fox); color: var(--ink); }
+
+  /* ── Run workspace ──────────────────────── */
+  #workspace { display: none; }
+  .ws-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
+
+  /* Browser frame */
+  .browser {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 24px 70px rgba(0,0,0,.5);
+  }
+  .b-bar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    background: var(--bg-soft); border-bottom: 1px solid var(--line);
+  }
+  .lights { display: flex; gap: 6px; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; background: #3c4356; }
+  .lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+  .b-url {
+    flex: 1; display: flex; align-items: center; gap: 8px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 12px; font-size: 12.5px; color: var(--dim);
+    font-family: 'JetBrains Mono', monospace; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .b-live {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 1.5px; color: var(--fox);
+    border: 1px solid var(--fox); padding: 3px 8px; border-radius: 99px;
+    animation: pulse 1.4s infinite; white-space: nowrap;
+  }
+  .b-view { position: relative; background: #0d1017; min-height: 420px; display: grid; place-items: center; }
+  .b-view img { width: 100%; display: block; }
+  .b-empty { color: #3f4557; font-size: 13px; text-align: center; padding: 60px 20px; line-height: 1.8; }
+  .scanline {
+    position: absolute; inset: 0; pointer-events: none; display: none;
+    background: linear-gradient(180deg, transparent 0%, rgba(255,122,26,.07) 48%, transparent 100%);
+    background-size: 100% 240px; background-repeat: no-repeat;
+  }
+  .scanline.on { display: block; animation: scan 1.6s linear infinite; }
+  @keyframes scan { from { background-position: 0 -240px; } to { background-position: 0 100vh; } }
+
+  /* Right column */
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px;
+  }
+  .card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--dim); margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .mission-txt { font-size: 14px; line-height: 1.55; color: var(--ink); background: var(--bg-soft); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .kv { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--dim); padding: 9px 0; border-bottom: 1px dashed var(--line); }
+  .kv:last-child { border: 0; }
+  .kv b { color: var(--ink); font-weight: 600; }
+  .kv .good { color: var(--ok); }
+
+  /* Step timeline */
+  .timeline { display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; }
+  .tstep {
+    display: flex; gap: 12px; padding: 11px 4px 11px 2px; position: relative;
+    animation: rise .25s ease;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .tstep .rail { display: flex; flex-direction: column; align-items: center; }
+  .tstep .node {
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 12px;
+    background: var(--bg-soft); border: 1px solid var(--line); flex-shrink: 0;
+  }
+  .tstep .rail::after { content: ''; flex: 1; width: 2px; background: var(--line); margin: 4px 0; }
+  .tstep:last-child .rail::after { display: none; }
+  .tstep .body { flex: 1; min-width: 0; padding-bottom: 4px; }
+  .tstep .lbl { font-size: 13px; font-weight: 600; }
+  .tstep .sub { font-size: 11.5px; color: var(--dim); margin-top: 2px; line-height: 1.5; word-break: break-word; }
+  .tstep.run .node { border-color: var(--fox); box-shadow: 0 0 14px rgba(255,122,26,.4); }
+  .tstep.ok .node { border-color: var(--ok); background: var(--ok-soft); }
+  .tstep.gate .node { border-color: var(--warn); background: var(--warn-soft); box-shadow: 0 0 14px rgba(251,191,36,.35); }
+  .tstep.err .node { border-color: var(--bad); }
+  .pill { font-size: 10px; font-weight: 700; letter-spacing: .8px; padding: 2px 8px; border-radius: 99px; margin-left: 8px; vertical-align: 1px; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.gate { background: var(--warn-soft); color: var(--warn); }
+
+  /* Gallery */
+  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .gallery img { width: 100%; border: 1px solid var(--line); border-radius: 8px; cursor: zoom-in; transition: border-color .15s; }
+  .gallery img:hover { border-color: var(--fox); }
+
+  /* Approval modal */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(5,6,9,.72); backdrop-filter: blur(6px);
+    display: none; place-items: center; z-index: 100; padding: 20px;
+  }
+  .overlay.on { display: grid; }
+  .modal {
+    width: min(860px, 100%); background: var(--card); border: 1px solid var(--line);
+    border-radius: 18px; overflow: hidden; box-shadow: 0 40px 120px rgba(0,0,0,.7);
+    animation: rise .25s ease;
+  }
+  .modal .head {
+    display: flex; gap: 12px; align-items: center; padding: 18px 22px;
+    background: linear-gradient(180deg, var(--warn-soft), transparent); border-bottom: 1px solid var(--line);
+  }
+  .modal .head .big { font-size: 22px; }
+  .modal .head h2 { font-size: 16px; font-weight: 700; }
+  .modal .head p { color: var(--dim); font-size: 12.5px; margin-top: 3px; }
+  .modal img { width: 100%; max-height: 480px; object-fit: contain; background: #0d1017; border-bottom: 1px solid var(--line); }
+  .modal .actions { display: flex; gap: 12px; padding: 18px 22px; justify-content: flex-end; }
+
+  /* Done banner */
+  .done-banner {
+    display: none; text-align: center; background: var(--ok-soft); border: 1px solid rgba(52,211,153,.3);
+    color: var(--ok); border-radius: 14px; padding: 18px; font-weight: 700; margin-bottom: 20px;
+  }
+  .done-banner.on { display: block; }
+
+  footer { text-align: center; color: #454b5c; font-size: 12px; padding: 30px; line-height: 1.8; }
+
+  @media (max-width: 900px) { .ws-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-<header>
-  <span class="logo">🦊</span>
-  <h1>Ghostfox Zero <span style="color:var(--dim)">// zero blast radius</span></h1>
-  <div class="sub">Vultr Serverless Inference · sandboxed Playwright</div>
-</header>
-<main>
-  <section class="panel">
-    <h2>Mission</h2>
-    <textarea id="goal" placeholder="e.g. Go to https://example.com, fill the contact form with name Fox and message Hello, show me before you submit."></textarea>
-    <button id="go">Deploy the fox</button>
-    <div id="status">idle</div>
 
-    <h2 style="margin-top:18px">Human approval gate</h2>
-    <div id="gate">
-      <p>⚠️ Final action detected — review before the fox commits anything.</p>
-      <img id="gateShot" alt="latest screenshot">
-      <div class="row">
-        <button class="approve" id="approveBtn">Approve</button>
-        <button class="reject" id="rejectBtn">Reject</button>
-      </div>
+<header class="top">
+  <span class="logo">🦊</span>
+  <span class="brand">Ghostfox <em>Zero</em></span>
+  <span class="tag">zero blast radius</span>
+  <span class="spacer"></span>
+  <span class="status-pill"><span class="dot" id="dot"></span><span id="statusText">idle</span></span>
+</header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero" id="hero">
+    <h1>Your digital worker for <em>boring web chores</em></h1>
+    <p>Type the task once. Watch the fox do it — live, in a sealed container.
+       It reads the page, acts one step at a time, gets every step verified by AI vision,
+       and <b>never presses Submit without your approval.</b></p>
+    <div class="mission">
+      <input id="goalInput" type="text" spellcheck="false"
+        placeholder="e.g. Open https://httpbin.org/forms/post, fill custname with Ghostfox Zero, then submit" />
+      <button class="btn" id="goBtn">Set the fox loose&nbsp;→</button>
+    </div>
+    <div class="chips" id="chips">
+      <span class="chip" data-g="Open https://httpbin.org/forms/post, fill custname with Ghostfox Zero, then submit the form.">📋 Fill a form</span>
+      <span class="chip" data-g="Open https://news.ycombinator.com, read the front page and tell me the top 5 story titles.">📰 Summarize a page</span>
+      <span class="chip" data-g="Open https://books.toscrape.com and show me the first book's price.">🛍 Check a listing</span>
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Live log</h2>
-    <div id="log"></div>
-    <h2 style="margin-top:18px">Verified screenshots</h2>
-    <div id="shots"></div>
+  <!-- WORKSPACE -->
+  <section id="workspace">
+    <div class="done-banner" id="doneBanner">✅ Mission complete — sandbox destroyed, zero residue.</div>
+    <div class="ws-grid">
+      <!-- live browser view -->
+      <div class="browser">
+        <div class="b-bar">
+          <div class="lights"><i></i><i></i><i></i></div>
+          <div class="b-url" id="urlBar">about:blank</div>
+          <span class="b-live" id="liveBadge">LIVE</span>
+        </div>
+        <div class="b-view">
+          <div class="b-empty" id="bEmpty">🦊<br>The fox is stretching its legs…<br>First live frame lands here.</div>
+          <img id="liveShot" alt="live screenshot of the fox's screen" style="display:none">
+          <div class="scanline" id="scan"></div>
+        </div>
+      </div>
+
+      <!-- right column -->
+      <div style="display:flex; flex-direction:column; gap:16px;">
+        <div class="card">
+          <h3>📋 Mission</h3>
+          <div class="mission-txt" id="missionTxt">—</div>
+        </div>
+        <div class="card">
+          <h3>🧭 Mission control</h3>
+          <div class="kv"><span>Engine</span><b>Ghostfox (Firefox) · disposable</b></div>
+          <div class="kv"><span>Reasoning</span><b>Vultr Serverless Inference</b></div>
+          <div class="kv"><span>Verification</span><b class="good">AI vision, every step</b></div>
+          <div class="kv"><span>Containment</span><b class="good">locked container, --rm</b></div>
+        </div>
+        <div class="card">
+          <h3>🪜 Steps</h3>
+          <div class="timeline" id="timeline"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;" id="galleryCard" hidden>
+      <h3>📸 Verified screenshots</h3>
+      <div class="gallery" id="gallery"></div>
+    </div>
   </section>
 </main>
+
+<!-- APPROVAL MODAL -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="head">
+      <span class="big">⚠️</span>
+      <div>
+        <h2>The fox needs your permission</h2>
+        <p>It is about to commit data (submit / send). Review the proof, then decide.</p>
+      </div>
+    </div>
+    <img id="gateShot" alt="proof screenshot before committing">
+    <div class="actions">
+      <button class="btn no" id="rejectBtn">✕ Reject — abort mission</button>
+      <button class="btn ok" id="approveBtn">✓ Approve this action</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Ghostfox Zero — an agent that only chats is a demo; an agent that executes safely is a product.<br>
+  Firefox engine · Rust MCP runtime · Vultr Cloud + Serverless Inference · every task burns its own container.
+</footer>
 
 <script src="app.js"></script>
 </body>
