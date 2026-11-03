@@ -215,6 +215,12 @@ setInterval(async () => {
   try {
     const st = await (await fetch('/status')).json();
     if (st.pendingApproval && !overlay.classList.contains('on')) overlay.classList.add('on');
+    // If a run is already active when the page opens, join the show.
+    if (st.running && hero.style.display !== 'none') {
+      hero.style.display = 'none';
+      workspace.style.display = 'block';
+      $('missionTxt').textContent = '— live run in progress —';
+    }
   } catch {}
   try {
     const res = await fetch('/screenshots');
