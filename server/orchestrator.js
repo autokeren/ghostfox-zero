@@ -50,6 +50,23 @@ export const liveState = { sandbox: null };
 let framesOn = false;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Retry MCP calls that race a page navigation — clicking a link can destroy
+ *  the execution context and the next call arrives before the new one is
+ *  ready. Wait a beat and try again. */
+async function mcpRetry(fn, { delay = 2200, tries = 3 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); }
+    catch (e) {
+      if (i === tries - 1) throw e;
+      if (/execution context|channel|no such page|timed out/i.test(String(e.message || e))) {
+        await sleep(delay);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 async function frameLoop({ client, sb, getSessionId, getPageId, emit }) {
   while (framesOn) {
     await sleep(950);
