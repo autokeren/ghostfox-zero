@@ -5,6 +5,7 @@
 // Inference, and final actions require explicit human approval.
 
 import { readFile } from 'node:fs/promises';
+import sharp from 'sharp';
 import { join } from 'node:path';
 import { chat, vision } from './inference.js';
 import { startGhostfoxSandbox } from './sandbox.js';
@@ -43,6 +44,30 @@ let pendingApproval = null;
 /** Live sandbox reference for the /live-view proxy (null when idle). */
 export const liveState = { sandbox: null };
 
+/** Near-realtime frame stream: while a mission runs, capture the fox's
+ *  screen ~1x/second straight over MCP (no liveview server hop), compress
+ *  to a small JPEG and push it to the UI as 'frame' events. */
+let framesOn = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function frameLoop({ client, sb, getSessionId, getPageId, emit }) {
+  while (framesOn) {
+    await sleep(950);
+    const sid = getSessionId();
+    const pid = getPageId();
+    if (!framesOn || !sid || !pid) continue;
+    try {
+      const raw = await client.callText('page_screenshot', { session_id: sid, page_id: pid });
+      const info = extractJSON(raw);
+      if (!info.file) continue;
+      const hostPath = join(sb.artifacts, info.file.replace(/^\/data\/?/, ''));
+      const png = await readFile(hostPath);
+      const jpg = await sharp(png).resize(1000).jpeg({ quality: 68 }).toBuffer();
+      emit('frame', { b64: jpg.toString('base64'), w: 1000 });
+    } catch { /* frame skipped — next tick */ }
+  }
+}
+
 export async function runTask(goal, onEvent) {
   const emit = (type, data) => onEvent && onEvent({ type, data, ts: Date.now() });
 
@@ -57,6 +82,7 @@ export async function runTask(goal, onEvent) {
   const history = [];
   const screenshots = [];
 
+  let pageIdLive = null; // mirrors pageId for the frame loop
   try {
     emit('phase', 'spawning ghostfox engine (disposable container)');
 
@@ -89,7 +115,15 @@ export async function runTask(goal, onEvent) {
       }
 
       // ---- Execute one action through the Ghostfox engine ----
-      const receipt = await executeAction(client, sessionId, pageId, action, (pid) => { pageId = pid; }, (u) => { url = u; });
+      const receipt = await executeAction(client, sessionId, pageId, action, (pid) => {
+        pageId = pid;
+        if (pid && !pageIdLive) {
+          pageIdLive = pid;
+          framesOn = true;
+          frameLoop({ client, sb, getSessionId: () => sessionId, getPageId: () => pageIdLive, emit })
+            .catch(() => {});
+        }
+      }, (u) => { url = u; });
       if (receipt) emit('sandbox_log', receipt);
 
       // settle beat for dynamic pages
@@ -127,6 +161,7 @@ export async function runTask(goal, onEvent) {
     emit('error', { message: e.message });
     return { ok: false, screenshots, history };
   } finally {
+    framesOn = false;
     liveState.sandbox = null;
     await sb.destroy();
     emit('phase', 'sandbox container destroyed (zero residue)');

@@ -94,11 +94,7 @@ es.onmessage = (e) => {
       if (/session/.test(data)) {
         addStep({ cls: 'ok', icon: '✓', label: 'Engine online', sub: esc(data) });
         setStatus('working…', true);
-        // switch the browser view to the engine's built-in LIVE VIEW
-        // (auto-refreshes itself; zero extra load on the agent)
-        bEmpty.style.display = 'none';
-        liveFrame.style.display = 'block';
-        liveFrame.src = '/live-view/';
+        // frames now stream via MCP 'frame' events (~1 fps, JPEG)
       }
       break;
 
@@ -120,8 +116,16 @@ es.onmessage = (e) => {
       }
       break;
 
+    case 'frame':
+      // near-realtime stream from the control layer (~1 fps)
+      bEmpty.style.display = 'none';
+      liveFrame.style.display = 'none';
+      liveShot.style.display = 'block';
+      liveShot.src = `data:image/jpeg;base64,${data.b64}`;
+      break;
+
     case 'screenshot':
-      if (data.b64 && liveFrame.style.display === 'none') setLiveShot(data.b64);
+      if (data.b64 && liveShot.style.display === 'none') setLiveShot(data.b64);
       break;
 
     case 'verify':
