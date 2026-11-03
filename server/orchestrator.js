@@ -189,16 +189,27 @@ async function decideNext(goal, url, a11y, history) {
 Current URL: ${url || '(none yet)'}
 
 Semantic page snapshot (refs are stable):
-${a11y || '(page not open yet)'}
+${a11y ? a11y.slice(0, 6000) : '(page not open yet)'}
 
 Actions already taken: ${history.length ? history.map((a) => JSON.stringify(a)).join(' ; ') : 'none'}
 
 Decide the next single action.`;
-  const raw = await chat([
+  const msgs = [
     { role: 'system', content: DECIDE_SYSTEM },
     { role: 'user', content: userMsg },
-  ], { maxTokens: 3000 });
-  return extractJSON(raw);
+  ];
+  // Reasoning models can burn the whole budget thinking on huge pages;
+  // if the first reply comes back without JSON, retry once with a reminder.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const raw = await chat(msgs, { maxTokens: 6000 });
+    try {
+      return extractJSON(raw);
+    } catch {
+      if (attempt === 1) throw new Error('model produced no action JSON twice');
+      msgs.push({ role: 'assistant', content: raw.slice(0, 200) || '(empty)' });
+      msgs.push({ role: 'user', content: 'Reply with the action JSON object ONLY. No reasoning prose.' });
+    }
+  }
 }
 
 function extractJSON(text) {
