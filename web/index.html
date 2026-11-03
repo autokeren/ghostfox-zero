@@ -202,6 +202,8 @@
   }
   .done-banner.on { display: block; }
 
+  .result-hero { margin-bottom: 20px; border-color: rgba(52,211,153,.3); }
+  .result-hero h3 { color: var(--ok); }
   .result-txt {
     font-size: 15px; line-height: 1.75; color: var(--ink); white-space: pre-wrap;
     background: var(--bg-soft); border: 1px solid var(--line); border-radius: 12px;
@@ -245,6 +247,12 @@
   <!-- WORKSPACE -->
   <section id="workspace">
     <div class="done-banner" id="doneBanner">✅ Mission complete — sandbox destroyed, zero residue.</div>
+
+    <div class="card result-hero" id="resultCard" hidden>
+      <h3>📜 Result</h3>
+      <div class="result-txt" id="resultTxt"></div>
+    </div>
+
     <div class="ws-grid">
       <!-- live browser view -->
       <div class="browser">
@@ -280,11 +288,6 @@
           <div class="timeline" id="timeline"></div>
         </div>
       </div>
-    </div>
-
-    <div class="card" style="margin-top:20px;" id="resultCard" hidden>
-      <h3>📜 Result</h3>
-      <div class="result-txt" id="resultTxt"></div>
     </div>
 
     <div class="card" style="margin-top:20px;" id="galleryCard" hidden>
