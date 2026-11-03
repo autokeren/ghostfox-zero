@@ -98,6 +98,7 @@ es.onmessage = (e) => {
       if (/session/.test(data)) {
         addStep({ cls: 'ok', icon: '✓', label: 'Engine online', sub: esc(data) });
         setStatus('working…', true);
+        cancelBtn.style.display = 'inline-flex';
         // frames now stream via MCP 'frame' events (~1 fps, JPEG)
       }
       break;
@@ -166,6 +167,7 @@ es.onmessage = (e) => {
 
     case 'done':
       scan.classList.remove('on');
+      cancelBtn.style.display = 'none';
       liveFrame.style.display = 'none';
       liveFrame.src = '';
       if (data.ok && Array.isArray(data.screenshots) && data.screenshots.length) {
@@ -209,6 +211,13 @@ function iconFor(action) {
 }
 
 /* ── approval buttons ───────────────────── */
+const cancelBtn = $('cancelBtn');
+cancelBtn.onclick = async () => {
+  await fetch('/cancel', { method: 'POST' });
+  cancelBtn.style.display = 'none';
+  goBtn.disabled = false;
+};
+
 $('approveBtn').onclick = async () => {
   await fetch('/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approved: true }) });
   overlay.classList.remove('on');
@@ -229,9 +238,13 @@ setInterval(async () => {
     if (st.pendingApproval && !overlay.classList.contains('on')) overlay.classList.add('on');
     // If a run is already active when the page opens, join the show.
     if (st.running && hero.style.display !== 'none') {
-      hero.style.display = 'none';
       workspace.style.display = 'block';
       $('missionTxt').textContent = '— live run in progress —';
+      $('missionInput').disabled = true;
+      $('missionInput').placeholder = 'mission in progress…';
+    }
+    if (!st.running && hero.style.display !== 'none' && $('missionInput').disabled) {
+      location.reload(); // clean state
     }
   } catch {}
   try {

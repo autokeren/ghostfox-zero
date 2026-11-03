@@ -83,6 +83,15 @@ app.get('/status', (req, res) => {
   });
 });
 
+app.post('/cancel', (req, res) => {
+  if (!activeRun) return res.json({ ok: true, message: 'no active run' });
+  // Force-kill any sandbox containers and reset state
+  try { require('node:child_process').execSync('docker ps -q --filter ancestor=ghcr.io/autokeren/ghostfox | xargs -r docker kill', { stdio: 'ignore' }); } catch {}
+  activeRun = null;
+  broadcast({ type: 'done', data: { ok: false, cancelled: true, screenshots: [] } });
+  res.json({ ok: true });
+});
+
 app.get('/screenshots', (req, res) => {
   res.json({ shots: runScreenshots });
 });
