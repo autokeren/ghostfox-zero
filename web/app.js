@@ -240,10 +240,10 @@ setInterval(async () => {
     if (st.running && hero.style.display !== 'none') {
       workspace.style.display = 'block';
       $('missionTxt').textContent = '— live run in progress —';
-      $('missionInput').disabled = true;
-      $('missionInput').placeholder = 'mission in progress…';
+      $('missionInput').style.pointerEvents = 'none'; $('missionInput').style.opacity = '0.5';
+      $('goalInput').placeholder = 'mission in progress…';
     }
-    if (!st.running && hero.style.display !== 'none' && $('missionInput').disabled) {
+    if (!st.running && hero.style.display !== 'none' && $('missionInput').style.pointerEvents === 'none') {
       location.reload(); // clean state
     }
   } catch {}
