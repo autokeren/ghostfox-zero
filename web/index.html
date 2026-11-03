@@ -202,6 +202,11 @@
   }
   .done-banner.on { display: block; }
 
+  .result-txt {
+    font-size: 15px; line-height: 1.75; color: var(--ink); white-space: pre-wrap;
+    background: var(--bg-soft); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; animation: rise .3s ease;
+  }
   footer { text-align: center; color: #454b5c; font-size: 12px; padding: 30px; line-height: 1.8; }
 
   @media (max-width: 900px) { .ws-grid { grid-template-columns: 1fr; } }
@@ -274,6 +279,11 @@
           <div class="timeline" id="timeline"></div>
         </div>
       </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;" id="resultCard" hidden>
+      <h3>📜 Result</h3>
+      <div class="result-txt" id="resultTxt"></div>
     </div>
 
     <div class="card" style="margin-top:20px;" id="galleryCard" hidden>

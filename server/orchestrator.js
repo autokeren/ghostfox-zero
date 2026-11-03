@@ -24,14 +24,15 @@ Reply format — strict JSON, one object, no prose:
 {"action":"wait","ms":5000}                    wait for slow/loading pages (SPA, skeleton screens)
 {"action":"screenshot"}                        take a fresh screenshot (use after waiting)
 {"action":"final_click","ref":"e3"}           click that COMMITS data (submit/send/purchase button) — triggers human approval
-{"action":"done","summary":"..."}              goal achieved, stop
+{"action":"done","result":"<full answer for the user — the actual summary/data requested>","summary":"one line"}  goal achieved; ALWAYS put the complete answer in result (the UI shows it to the user)
 
 Rules:
 1. One action per reply. JSON only.
 2. Use ONLY refs present in the snapshot; never invent refs.
 3. Use final_click for anything that submits or commits data.
 4. If the visible page already satisfies the goal, return done.
-5. If the last screenshot looked blank/empty (SPA still loading), use {"action":"wait","ms":5000} then {"action":"screenshot"}.`;
+5. If the last screenshot looked blank/empty (SPA still loading), use {"action":"wait","ms":5000} then {"action":"screenshot"}.
+6. When the goal asks for information (summarize/list/find/describe/what is...), the done action MUST carry the full answer text in "result" — that is the product the user gets.`;
 
 const VERIFY_PROMPT = (goal, lastAction) =>
   `You are the verification layer of Ghostfox Zero, a sandboxed browser agent.
@@ -100,6 +101,7 @@ export async function runTask(goal, onEvent) {
   const screenshots = [];
 
   let pageIdLive = null; // mirrors pageId for the frame loop
+  let finalResult = ''; // the agent's answer (shown in the UI result card)
   try {
     emit('phase', 'spawning ghostfox engine (disposable container)');
 
@@ -114,7 +116,9 @@ export async function runTask(goal, onEvent) {
       history.push(action);
 
       if (action.action === 'done') {
-        emit('phase', `goal complete: ${action.summary || ''}`);
+        finalResult = action.result || action.summary || '';
+        emit('phase', `goal complete: ${finalResult.slice(0, 120)}`);
+        emit('result', { text: finalResult });
         break;
       }
 
@@ -143,24 +147,23 @@ export async function runTask(goal, onEvent) {
       }, (u) => { url = u; });
       if (receipt) emit('sandbox_log', receipt);
 
-      // settle beat for dynamic pages
-      if (pageId) {
-        try { await client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 15000 }); } catch {}
-        // Lazy-load nudge: news sites & SPAs only fill content on scroll.
-        // One PageDown wakes the loaders, Home returns to the top.
-        if (action.action === 'goto') {
-          try {
-            await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'PageDown' });
-            await new Promise((r) => setTimeout(r, 2200));
-            await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'Home' });
-            await new Promise((r) => setTimeout(r, 900));
-          } catch {}
-        }
+      // Lazy-load nudge: news sites & SPAs only fill content on scroll.
+      if (pageId && action.action === 'goto') {
+        try {
+          await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'PageDown' });
+          await new Promise((r) => setTimeout(r, 2200));
+          await client.call('page_press', { session_id: sessionId, page_id: pageId, key: 'Home' });
+          await new Promise((r) => setTimeout(r, 900));
+        } catch {}
       }
 
-      // ---- Screenshot + vision verification (Vultr Inference) ----
-      const b64 = await captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId });
+      // ---- Await full page settle, then vision verify (Vultr Inference) ----
+      // awaitSettled uses the engine's page_wait_stable + a blank-frame
+      // check so verification judges a LOADED page, not a placeholder.
+      const b64 = await awaitSettled(client, sessionId, pageId, sb);
       if (b64) {
+        emit('screenshot', { index: screenshots.length, b64 });
+        screenshots.push(b64);
         try {
           const vRaw = await vision(VERIFY_PROMPT(goal, JSON.stringify(action)), b64);
           const vJson = extractJSON(vRaw);
@@ -183,7 +186,7 @@ export async function runTask(goal, onEvent) {
     }
 
     emit('phase', 'complete');
-    return { ok: true, screenshots, history };
+    return { ok: true, result: finalResult, screenshots, history };
   } catch (e) {
     emit('error', { message: e.message });
     return { ok: false, screenshots, history };
@@ -268,7 +271,7 @@ Decide the next single action.`;
   // Reasoning models can burn the whole budget thinking on huge pages;
   // if the first reply comes back without JSON, retry once with a reminder.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await chat(msgs, { maxTokens: 6000 });
+    const raw = await chat(msgs, { maxTokens: 8000 });
     try {
       return extractJSON(raw);
     } catch {
@@ -277,6 +280,39 @@ Decide the next single action.`;
       msgs.push({ role: 'user', content: 'Reply with the action JSON object ONLY. No reasoning prose.' });
     }
   }
+}
+
+/** Blank detector: a screenshot that is one uniform color (white/gray
+ *  placeholder) means the page hasn't rendered yet — not a verify failure. */
+async function screenshotIsBlank(pngBuf) {
+  try {
+    const { data } = await sharp(pngBuf).greyscale().resize(64, { kernel: 'nearest' }).raw().toBuffer({ resolveWithObject: true });
+    const mean = data.reduce((a, b) => a + b, 0) / data.length;
+    const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / data.length;
+    return Math.sqrt(variance) < 8; // stddev < 8 ⇒ almost one flat color
+  } catch { return false; }
+}
+
+/** The proper settle beat: wait for the render to settle (the engine's own
+ *  page_wait_stable — built for exactly this), then confirm with a real
+ *  screenshot. If the frame still looks blank, wait and shoot again —
+ *  verification must judge a loaded page, not a placeholder. */
+async function awaitSettled(client, sessionId, pageId, sb) {
+  if (!pageId) return null;
+  try { await mcpRetry(() => client.call('page_wait_stable', { session_id: sessionId, page_id: pageId, max_ms: 15000 })); } catch {}
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const raw = await mcpRetry(() => client.callText('page_screenshot', { session_id: sessionId, page_id: pageId }));
+      const info = extractJSON(raw);
+      if (!info.file) return null;
+      const png = await readFile(join(sb.artifacts, info.file.replace(/^\/data\/?/, '')));
+      if (!(await screenshotIsBlank(png)) || attempt === 2) {
+        return png.toString('base64');
+      }
+      await sleep(2500); // still blank — give the page another beat
+    } catch { if (attempt === 2) return null; await sleep(2000); }
+  }
+  return null;
 }
 
 function extractJSON(text) {

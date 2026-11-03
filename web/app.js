@@ -11,6 +11,7 @@ const scan = $('scan'), dot = $('dot'), statusText = $('statusText');
 const timeline = $('timeline'), gallery = $('gallery'), galleryCard = $('galleryCard');
 const overlay = $('overlay'), gateShot = $('gateShot');
 const doneBanner = $('doneBanner');
+const resultCard = $('resultCard'), resultTxt = $('resultTxt');
 
 let currentUrl = '(none yet)';
 let stepCount = 0;
@@ -52,6 +53,8 @@ async function startMission() {
   timeline.innerHTML = '';
   gallery.innerHTML = '';
   galleryCard.hidden = true;
+  resultCard.hidden = true;
+  resultTxt.textContent = '';
   doneBanner.classList.remove('on');
   liveShot.style.display = 'none';
   liveFrame.style.display = 'none';
@@ -150,6 +153,14 @@ es.onmessage = (e) => {
         gateShot.src = imgs[0];
         overlay.classList.add('on');
         setStatus('waiting for approval', true);
+      }
+      break;
+
+    case 'result':
+      if (data.text) {
+        resultTxt.textContent = data.text;
+        resultCard.hidden = false;
+        resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
       break;
 
