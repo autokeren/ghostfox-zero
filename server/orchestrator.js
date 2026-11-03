@@ -157,7 +157,7 @@ export async function runTask(goal, onEvent) {
       let a11y = null;
       if (pageId) {
         try {
-          a11y = (await client.callText('page_a11y', { session_id: sessionId, page_id: pageId })).slice(0, 8000);
+          a11y = (await mcpRetry(() => client.callText('page_a11y', { session_id: sessionId, page_id: pageId }))).slice(0, 8000);
         } catch (e) {
           emit('sandbox_log', `a11y unavailable: ${e.message}`);
         }
@@ -202,7 +202,7 @@ async function executeAction(client, sessionId, pageId, action, setPage, setUrl)
     }
     case 'screenshot': {
       if (!pageId) throw new Error('no page open');
-      await client.call('page_screenshot', { session_id: sessionId, page_id: pageId });
+      await mcpRetry(() => client.call('page_screenshot', { session_id: sessionId, page_id: pageId }));
       return 'screenshot captured';
     }
     case 'press': {
@@ -219,7 +219,7 @@ async function executeAction(client, sessionId, pageId, action, setPage, setUrl)
 async function captureScreenshot({ emit, client, sb, screenshots, sessionId, pageId }) {
   if (!pageId) return null;
   try {
-    const raw = await client.callText('page_screenshot', { session_id: sessionId, page_id: pageId });
+    const raw = await mcpRetry(() => client.callText('page_screenshot', { session_id: sessionId, page_id: pageId }));
     const info = extractJSON(raw); // { bytes, file }
     if (!info.file) return null;
     // in-container path /data/... maps to the mounted artifacts dir
