@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 const goalInput = $('goalInput'), goBtn = $('goBtn');
 const workspace = $('workspace'), hero = $('hero');
 const liveShot = $('liveShot'), bEmpty = $('bEmpty'), urlBar = $('urlBar');
+const liveFrame = $('liveFrame');
 const scan = $('scan'), dot = $('dot'), statusText = $('statusText');
 const timeline = $('timeline'), gallery = $('gallery'), galleryCard = $('galleryCard');
 const overlay = $('overlay'), gateShot = $('gateShot');
@@ -52,6 +53,8 @@ async function startMission() {
   galleryCard.hidden = true;
   doneBanner.classList.remove('on');
   liveShot.style.display = 'none';
+  liveFrame.style.display = 'none';
+  liveFrame.src = '';
   bEmpty.style.display = 'block';
   urlBar.textContent = 'about:blank';
   $('missionTxt').textContent = goal;
@@ -91,6 +94,11 @@ es.onmessage = (e) => {
       if (/session/.test(data)) {
         addStep({ cls: 'ok', icon: '✓', label: 'Engine online', sub: esc(data) });
         setStatus('working…', true);
+        // switch the browser view to the engine's built-in LIVE VIEW
+        // (auto-refreshes itself; zero extra load on the agent)
+        bEmpty.style.display = 'none';
+        liveFrame.style.display = 'block';
+        liveFrame.src = '/live-view/';
       }
       break;
 
@@ -113,7 +121,7 @@ es.onmessage = (e) => {
       break;
 
     case 'screenshot':
-      if (data.b64) setLiveShot(data.b64);
+      if (data.b64 && liveFrame.style.display === 'none') setLiveShot(data.b64);
       break;
 
     case 'verify':
@@ -142,6 +150,11 @@ es.onmessage = (e) => {
 
     case 'done':
       scan.classList.remove('on');
+      liveFrame.style.display = 'none';
+      liveFrame.src = '';
+      if (data.ok && Array.isArray(data.screenshots) && data.screenshots.length) {
+        setLiveShot(data.screenshots[data.screenshots.length - 1]);
+      }
       overlay.classList.remove('on');
       goBtn.disabled = false;
       setStatus('mission complete', false);

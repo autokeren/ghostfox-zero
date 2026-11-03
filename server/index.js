@@ -3,7 +3,7 @@ import express from 'express';
 import { config } from 'dotenv';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runTask, resolveApproval, hasPendingApproval } from './orchestrator.js';
+import { runTask, resolveApproval, hasPendingApproval, liveState } from './orchestrator.js';
 import { inferenceInfo } from './inference.js';
 
 config({ path: join(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
@@ -85,6 +85,17 @@ app.get('/status', (req, res) => {
 
 app.get('/screenshots', (req, res) => {
   res.json({ shots: runScreenshots });
+});
+
+// Live view proxy: tunnel the sandbox engine's built-in live view (auto-
+// refreshing page) through the control layer. The sandbox never opens an
+// inbound port — we relay through docker exec into its loopback.
+app.get(['/live-view', '/live-view/*'], async (req, res) => {
+  if (!liveState.sandbox) return res.status(404).send('no live sandbox running');
+  const sub = req.path.replace(/^\/live-view/, '') || '/';
+  const shot = await liveState.sandbox.relayLiveView(sub);
+  if (!shot) return res.status(502).send('live view unreachable');
+  res.status(shot.status).type(shot.contentType).send(shot.body);
 });
 
 const PORT = parseInt(process.env.PORT || '3000', 10);

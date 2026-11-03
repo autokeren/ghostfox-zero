@@ -40,10 +40,14 @@ Look at the screenshot of the current page. Answer STRICTLY as JSON: {"pass": tr
 
 let pendingApproval = null;
 
+/** Live sandbox reference for the /live-view proxy (null when idle). */
+export const liveState = { sandbox: null };
+
 export async function runTask(goal, onEvent) {
   const emit = (type, data) => onEvent && onEvent({ type, data, ts: Date.now() });
 
   const sb = await startGhostfoxSandbox();
+  liveState.sandbox = sb;
   const { client } = sb;
   client.on('log', (l) => emit('sandbox_log', l));
 
@@ -123,6 +127,7 @@ export async function runTask(goal, onEvent) {
     emit('error', { message: e.message });
     return { ok: false, screenshots, history };
   } finally {
+    liveState.sandbox = null;
     await sb.destroy();
     emit('phase', 'sandbox container destroyed (zero residue)');
   }
