@@ -11,8 +11,8 @@ config({ path: join(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-mountMcpGateway(app); // public MCP endpoint: /mcp/sse + /mcp/msg
 app.use(express.json({ limit: '1mb' }));
+mountMcpGateway(app); // public MCP endpoint (AFTER json parser!)
 app.use(express.static(join(__dirname, 'web')));
 
 // SSE-style event bus per run (simple in-memory; one active run at a time)
