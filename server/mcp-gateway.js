@@ -40,19 +40,14 @@ export class McpSseSession {
       IMAGE,
     ];
     this.proc = spawn('docker', args);
-    this.messageBuffer = [];
-    this.ready = false;
-    this.proc.stdout.on('data', (d) => this._onData(d));
-    this.proc.stderr.on('data', (d) => {
+    this.ready = true; // MCP server is ready from boot — stdin is piped
+    this.proc.stdout.on('data', (d) => {
       const s = d.toString();
-      if (s.includes('Juggler') || s.includes('headless')) {
-        this.ready = true;
-        // Flush any buffered messages now that the engine is up
-        while (this.messageBuffer.length > 0) {
-          const msg = this.messageBuffer.shift();
-          this.proc.stdin.write(msg);
-        }
-      }
+      console.log(`[mcp-gateway] stdout: ${s.slice(0, 100)}`);
+      this._onData(d);
+    });
+    this.proc.stderr.on('data', (d) => {
+      console.log(`[mcp-gateway] stderr: ${d.toString().slice(0, 100)}`);
     });
     this.proc.on('close', (code) => {
       this.ready = false;
@@ -83,13 +78,15 @@ export class McpSseSession {
 
   send(message) {
     if (!this.proc || this.proc.killed) return false;
-    const line = JSON.stringify(message) + '\n';
-    if (this.ready) {
+    try {
+      const line = JSON.stringify(message) + '\n';
       this.proc.stdin.write(line);
-    } else {
-      this.messageBuffer.push(line);
+      console.log(`[mcp-gateway] sent: ${line.slice(0, 80)}`);
+      return true;
+    } catch (e) {
+      console.error(`[mcp-gateway] send error: ${e.message}`);
+      return false;
     }
-    return true;
   }
 
   stop() {
