@@ -5,11 +5,13 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runTask, resolveApproval, hasPendingApproval, liveState } from './orchestrator.js';
 import { inferenceInfo } from './inference.js';
+import { mountMcpGateway } from './mcp-gateway.js';
 
 config({ path: join(dirname(fileURLToPath(import.meta.url)), '..', '.env') });
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
+mountMcpGateway(app); // public MCP endpoint: /mcp/sse + /mcp/msg
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(join(__dirname, 'web')));
 
