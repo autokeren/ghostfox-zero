@@ -4,6 +4,8 @@
 
 Ghostfox Zero takes a natural-language goal and pursues it with a **true agentic loop**: the reasoning model (Vultr Serverless Inference) sees the live page through Ghostfox's semantic accessibility layer, decides one action at a time, executes it inside a disposable Ghostfox engine container, verifies every step with a vision model, and requires **human approval** before any action that commits data.
 
+**Live demo:** [https://zero.autokeren.com](https://zero.autokeren.com)
+
 Headless Chrome agents eat Cloudflare 403s on ~20% of the web. Ghostfox Zero runs **Ghostfox** — a fingerprint-coherent Firefox engine with C++-level anti-detect and a Rust MCP runtime — so the agent goes where other agents get blocked.
 
 > Entry for the **Vultr: Agent Rush Hackathon** — Challenge 1: *Blast Radius Zero*.
@@ -92,7 +94,7 @@ npm install --prefix server
 node server/index.js
 
 # 6. Open the web UI
-# http://<your-vultr-ip>:3000
+# https://zero.autokeren.com
 ```
 
 ## Usage
