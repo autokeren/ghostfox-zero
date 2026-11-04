@@ -43,11 +43,10 @@ export class McpSseSession {
     this.ready = true; // MCP server is ready from boot — stdin is piped
     this.proc.stdout.on('data', (d) => {
       const s = d.toString();
-      console.log(`[mcp-gateway] stdout: ${s.slice(0, 100)}`);
       this._onData(d);
     });
     this.proc.stderr.on('data', (d) => {
-      console.log(`[mcp-gateway] stderr: ${d.toString().slice(0, 100)}`);
+      // engine stderr ignored
     });
     this.proc.on('close', (code) => {
       this.ready = false;
@@ -81,7 +80,6 @@ export class McpSseSession {
     try {
       const line = JSON.stringify(message) + '\n';
       this.proc.stdin.write(line);
-      console.log(`[mcp-gateway] sent: ${line.slice(0, 80)}`);
       return true;
     } catch (e) {
       console.error(`[mcp-gateway] send error: ${e.message}`);
