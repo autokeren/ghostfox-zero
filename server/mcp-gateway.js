@@ -40,9 +40,24 @@ export class McpSseSession {
       IMAGE,
     ];
     this.proc = spawn('docker', args);
+    this.messageBuffer = [];
+    this.ready = false;
     this.proc.stdout.on('data', (d) => this._onData(d));
-    this.proc.stderr.on('data', (d) => { /* engine logs — ignore */ });
-    this.proc.on('close', () => { this.ready = false; });
+    this.proc.stderr.on('data', (d) => {
+      const s = d.toString();
+      if (s.includes('Juggler') || s.includes('headless')) {
+        this.ready = true;
+        // Flush any buffered messages now that the engine is up
+        while (this.messageBuffer.length > 0) {
+          const msg = this.messageBuffer.shift();
+          this.proc.stdin.write(msg);
+        }
+      }
+    });
+    this.proc.on('close', (code) => {
+      this.ready = false;
+      console.error(`[mcp-gateway] container ${this.sessionId.slice(0, 8)} exited code=${code}`);
+    });
     return this;
   }
 
@@ -68,7 +83,12 @@ export class McpSseSession {
 
   send(message) {
     if (!this.proc || this.proc.killed) return false;
-    this.proc.stdin.write(JSON.stringify(message) + '\n');
+    const line = JSON.stringify(message) + '\n';
+    if (this.ready) {
+      this.proc.stdin.write(line);
+    } else {
+      this.messageBuffer.push(line);
+    }
     return true;
   }
 
